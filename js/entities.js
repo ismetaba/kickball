@@ -303,6 +303,8 @@ class Field {
     }
 
     update(canvasWidth, canvasHeight) {
+        this.canvasWidth = canvasWidth;
+        this.canvasHeight = canvasHeight;
         const padding = 30;
         let widthRatio, heightRatio;
 

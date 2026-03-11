@@ -73,56 +73,94 @@ const Physics = {
         return true;
     },
 
+    // Block player from entering a goal area. Uses a flat wall for the mouth
+    // with circular collision at goal posts for smooth corner sliding.
+    blockFromGoal(entity, mouthX, goalTop, goalBottom, goalDepth, isLeftGoal) {
+        const r = entity.radius;
+        const postR = 5; // Goal post collision radius
+
+        // Only process if entity is near the goal area
+        const nearX = isLeftGoal
+            ? (entity.x - r < mouthX + r && entity.x > mouthX - goalDepth - r)
+            : (entity.x + r > mouthX - r && entity.x < mouthX + goalDepth + r);
+        if (!nearX) return;
+        if (entity.y + r < goalTop - r && entity.y - r > goalBottom + r) return;
+
+        // 1) Goal posts: circle collision at post corners (smooth rounding)
+        const posts = [
+            { x: mouthX, y: goalTop },
+            { x: mouthX, y: goalBottom }
+        ];
+        for (const post of posts) {
+            const dx = entity.x - post.x;
+            const dy = entity.y - post.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const minDist = r + postR;
+            if (dist < minDist && dist > 0.5) {
+                const overlap = minDist - dist;
+                const nx = dx / dist;
+                const ny = dy / dist;
+                entity.x += nx * overlap;
+                entity.y += ny * overlap;
+                const vDotN = entity.vx * nx + entity.vy * ny;
+                if (vDotN < 0) {
+                    entity.vx -= (1 + this.WALL_BOUNCE) * vDotN * nx;
+                    entity.vy -= (1 + this.WALL_BOUNCE) * vDotN * ny;
+                }
+            }
+        }
+
+        // 2) Goal mouth wall: flat vertical wall between posts
+        // Only block if entity is between the posts (Y-wise) and approaching from the field
+        if (entity.y > goalTop + postR && entity.y < goalBottom - postR) {
+            if (isLeftGoal) {
+                if (entity.x - r < mouthX && entity.x > mouthX - goalDepth) {
+                    entity.x = mouthX + r;
+                    if (entity.vx < 0) entity.vx *= -this.WALL_BOUNCE;
+                }
+            } else {
+                if (entity.x + r > mouthX && entity.x < mouthX + goalDepth) {
+                    entity.x = mouthX - r;
+                    if (entity.vx > 0) entity.vx *= -this.WALL_BOUNCE;
+                }
+            }
+        }
+
+        // 3) Top/bottom bars: only block from outside the goal
+        const behindMouth = isLeftGoal ? (entity.x < mouthX) : (entity.x > mouthX);
+        if (behindMouth) {
+            // Top bar: block from above
+            if (entity.y + r > goalTop && entity.y < goalTop + r) {
+                entity.y = goalTop - r;
+                if (entity.vy > 0) entity.vy *= -this.WALL_BOUNCE;
+            }
+            // Bottom bar: block from below
+            if (entity.y - r < goalBottom && entity.y > goalBottom - r) {
+                entity.y = goalBottom + r;
+                if (entity.vy < 0) entity.vy *= -this.WALL_BOUNCE;
+            }
+        }
+    },
+
     constrainToField(entity, field, isPlayer = false) {
         const r = entity.radius;
         const goalTop = field.goalY;
         const goalBottom = field.goalY + field.goalHeight;
         const goalDepth = field.goalDepth || 20;
-        // Players can overflow on field edges but NOT into goals
-        const overflow = isPlayer ? entity.radius * 1.5 : 0;
 
         if (isPlayer) {
-            // Is the player's center in the goal Y range?
-            const nearGoalY = entity.y > goalTop - r && entity.y < goalBottom + r;
+            const cw = field.canvasWidth;
+            const ch = field.canvasHeight;
 
-            // --- Left side ---
-            if (nearGoalY && entity.x < field.x + r) {
-                // Near goal opening: hard wall at field line, cannot enter goal
-                entity.x = field.x + r;
-                if (entity.vx < 0) entity.vx *= -this.WALL_BOUNCE;
+            // Canvas edge boundaries
+            if (entity.x - r < 0) { entity.x = r; if (entity.vx < 0) entity.vx = 0; }
+            if (entity.x + r > cw) { entity.x = cw - r; if (entity.vx > 0) entity.vx = 0; }
+            if (entity.y - r < 0) { entity.y = r; if (entity.vy < 0) entity.vy = 0; }
+            if (entity.y + r > ch) { entity.y = ch - r; if (entity.vy > 0) entity.vy = 0; }
 
-                // Also push away from post edges if overlapping
-                if (entity.y < goalTop + r && entity.y > goalTop - r) {
-                    entity.y = goalTop - r;
-                    if (entity.vy > 0) entity.vy *= -this.WALL_BOUNCE;
-                }
-                if (entity.y > goalBottom - r && entity.y < goalBottom + r) {
-                    entity.y = goalBottom + r;
-                    if (entity.vy < 0) entity.vy *= -this.WALL_BOUNCE;
-                }
-            } else if (entity.x - r < field.x - overflow) {
-                // Not near goal: allow overflow up to 1.5x body
-                entity.x = field.x - overflow + r;
-                if (entity.vx < 0) entity.vx *= -this.WALL_BOUNCE;
-            }
-
-            // --- Right side ---
-            if (nearGoalY && entity.x > field.x + field.width - r) {
-                entity.x = field.x + field.width - r;
-                if (entity.vx > 0) entity.vx *= -this.WALL_BOUNCE;
-
-                if (entity.y < goalTop + r && entity.y > goalTop - r) {
-                    entity.y = goalTop - r;
-                    if (entity.vy > 0) entity.vy *= -this.WALL_BOUNCE;
-                }
-                if (entity.y > goalBottom - r && entity.y < goalBottom + r) {
-                    entity.y = goalBottom + r;
-                    if (entity.vy < 0) entity.vy *= -this.WALL_BOUNCE;
-                }
-            } else if (entity.x + r > field.x + field.width + overflow) {
-                entity.x = field.x + field.width + overflow - r;
-                if (entity.vx > 0) entity.vx *= -this.WALL_BOUNCE;
-            }
+            // Block from goal areas
+            this.blockFromGoal(entity, field.x, goalTop, goalBottom, goalDepth, true);
+            this.blockFromGoal(entity, field.x + field.width, goalTop, goalBottom, goalDepth, false);
         } else {
             // Ball: can enter goal area, constrained by goal depth
             // Left goal
@@ -165,36 +203,8 @@ const Physics = {
                     entity.vx *= -this.WALL_BOUNCE;
                 }
             }
-        }
 
-        // Top / bottom walls — overflow allowed but not into goal zone
-        if (isPlayer) {
-            // Check if player is near the goal X range (left or right edge)
-            const nearLeftGoalX = entity.x - r < field.x;
-            const nearRightGoalX = entity.x + r > field.x + field.width;
-
-            if (nearLeftGoalX || nearRightGoalX) {
-                // Near goal sides: no Y overflow to prevent clipping above/below goal
-                if (entity.y - r < field.y) {
-                    entity.y = field.y + r;
-                    if (entity.vy < 0) entity.vy *= -this.WALL_BOUNCE;
-                }
-                if (entity.y + r > field.y + field.height) {
-                    entity.y = field.y + field.height - r;
-                    if (entity.vy > 0) entity.vy *= -this.WALL_BOUNCE;
-                }
-            } else {
-                // Normal overflow
-                if (entity.y - r < field.y - overflow) {
-                    entity.y = field.y - overflow + r;
-                    if (entity.vy < 0) entity.vy *= -this.WALL_BOUNCE;
-                }
-                if (entity.y + r > field.y + field.height + overflow) {
-                    entity.y = field.y + field.height + overflow - r;
-                    if (entity.vy > 0) entity.vy *= -this.WALL_BOUNCE;
-                }
-            }
-        } else {
+            // Ball Y walls
             if (entity.y - r < field.y) {
                 entity.y = field.y + r;
                 entity.vy *= -this.WALL_BOUNCE;
