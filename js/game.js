@@ -30,7 +30,9 @@ class Game {
         this.lastTime = 0;
         this.matchOver = false;
 
-        this.input = { x: 0, y: 0, kick: false, dash: false, tackle: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false };
+        this.input = { x: 0, y: 0, kick: false, dash: false, tackle: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
+        this.timeScale = 1.0;
+        this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
 
         // Stats
         this.stats = {
@@ -146,6 +148,8 @@ class Game {
         this.isGoalScored = false;
         this.goalTimer = 0;
         this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
+        this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
+        this.timeScale = 1.0;
 
         this.lastTime = performance.now();
         this.loop();
@@ -205,6 +209,7 @@ class Game {
         // Always update effects (even during goal pause)
         this.renderer.updateConfetti(dt);
         this.renderer.updateNetRipple(dt);
+        this.renderer.updateHitFlashes();
 
         this.render();
 
@@ -212,9 +217,13 @@ class Game {
     }
 
     update(dt) {
-        // Timer (skip in practice mode)
+        // Apply time scale for slow-motion effects
+        const rawDt = dt;
+        dt *= this.timeScale;
+
+        // Timer (skip in practice mode) - use raw dt so timer isn't affected by slow-mo
         if (!this.practiceMode) {
-            this.timeRemaining -= dt;
+            this.timeRemaining -= rawDt;
             if (this.timeRemaining <= 0) {
                 this.timeRemaining = 0;
                 this.endMatch();
@@ -226,6 +235,21 @@ class Game {
             const s = secs % 60;
             document.getElementById('timer').textContent = `${m}:${s.toString().padStart(2, '0')}`;
         }
+
+        // Momentum decay
+        this.momentum.red = Math.max(0, this.momentum.red - this.momentum.decayRate * dt);
+        this.momentum.blue = Math.max(0, this.momentum.blue - this.momentum.decayRate * dt);
+
+        // Apply momentum bonus to all players
+        for (const p of this.players) {
+            p.momentumBonus = this.momentum[p.team] / this.momentum.max;
+        }
+
+        // Update momentum HUD
+        const redBar = document.getElementById('momentum-fill-red');
+        const blueBar = document.getElementById('momentum-fill-blue');
+        if (redBar) redBar.style.width = (this.momentum.red / this.momentum.max * 100) + '%';
+        if (blueBar) blueBar.style.width = (this.momentum.blue / this.momentum.max * 100) + '%';
 
         // Human input
         if (this.humanPlayer && this.humanPlayer.powerUp !== 'frozen' && this.humanPlayer.stunTimer <= 0) {
@@ -247,9 +271,11 @@ class Game {
                 const chargeRatio = Math.min(this.input.kickChargeTime / 1000, 1);
                 if (this.humanPlayer.kick(this.ball, chargeRatio)) {
                     this.stats.shots.red++;
-                    if (chargeRatio > 0.8) {
-                        this.renderer.triggerShake(0.8);
-                    }
+                    const shakeIntensity = 0.15 + chargeRatio * 0.85;
+                    this.renderer.triggerShake(shakeIntensity);
+                    this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.3 + chargeRatio * 0.7);
+                    // Momentum on kicks toward opponent half
+                    if (this.ball.vx > 0) this.addMomentum('red');
                 }
                 if (chargeRatio > 0.5) {
                     this.hitNearbyPlayers(this.humanPlayer);
@@ -264,6 +290,11 @@ class Game {
             } else if (this.input.dash) {
                 this.humanPlayer.dash();
                 this.input.dash = false;
+            }
+
+            if (this.input.switchPlayer) {
+                this.switchToNearestTeammate();
+                this.input.switchPlayer = false;
             }
         }
 
@@ -282,6 +313,11 @@ class Game {
             if (action.kick) {
                 if (player.kick(this.ball, 0.3)) {
                     this.stats.shots[player.team]++;
+                    this.renderer.triggerShake(0.2);
+                    this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.4);
+                    // Momentum on kicks toward opponent half
+                    const towardGoal = (player.team === 'red' && this.ball.vx > 0) || (player.team === 'blue' && this.ball.vx < 0);
+                    if (towardGoal) this.addMomentum(player.team);
                 }
                 this.hitNearbyPlayers(player);
             }
@@ -340,6 +376,15 @@ class Game {
         for (const p of this.players) {
             const collided = Physics.resolveCircleCollision(p, this.ball, Physics.PLAYER_BOUNCE, Physics.BALL_BOUNCE);
 
+            // Hit flash on collision
+            if (collided) {
+                const ballSpeed = Math.sqrt(this.ball.vx * this.ball.vx + this.ball.vy * this.ball.vy);
+                const intensity = Math.min(ballSpeed / Physics.MAX_BALL_SPEED, 1);
+                if (intensity > 0.15) {
+                    this.renderer.spawnHitFlash(this.ball.x, this.ball.y, intensity);
+                }
+            }
+
             // Auto super kick: if player is fully charged and touches the ball, fire it at enemy goal
             if (collided && p === this.humanPlayer && this.input.kickCharging && p.kickChargeRatio >= 1.0) {
                 p.kick(this.ball, 1.0);
@@ -356,18 +401,24 @@ class Game {
                 this.ball.vx += p.tackleDirX * Physics.KICK_FORCE * 0.8;
                 this.ball.vy += p.tackleDirY * Physics.KICK_FORCE * 0.8;
                 this.ball.lastKickedBy = p;
+                this.addMomentum(p.team);
             }
 
-            // Fire ball hits any player: knock them back and stun for 1 second
+            // Fire ball hits any player: knock them back and stun
             if (collided && this.ball.superKick > 0 && p !== this.ball.lastKickedBy) {
-                p.stunTimer = 1000;
-                // Knockback scales with ball speed (faster = harder hit)
                 const ballSpeed = Math.sqrt(this.ball.vx * this.ball.vx + this.ball.vy * this.ball.vy);
+                // Stun duration scales with impact speed (600-1200ms)
+                p.stunTimer = 600 + (ballSpeed / Physics.MAX_BALL_SPEED) * 600;
+                // Smooth knockback: add to existing velocity for natural feel
                 if (ballSpeed > 0.5) {
-                    const knockbackForce = 4 + (ballSpeed / Physics.MAX_BALL_SPEED) * 12;
-                    p.vx = (this.ball.vx / ballSpeed) * knockbackForce;
-                    p.vy = (this.ball.vy / ballSpeed) * knockbackForce;
+                    const knockbackForce = 3 + (ballSpeed / Physics.MAX_BALL_SPEED) * 8;
+                    const nx = this.ball.vx / ballSpeed;
+                    const ny = this.ball.vy / ballSpeed;
+                    p.vx += nx * knockbackForce;
+                    p.vy += ny * knockbackForce;
                 }
+                // Spawn visual impact
+                this.renderer.spawnHitFlash(p.x, p.y, 0.8);
             }
         }
 
@@ -412,6 +463,21 @@ class Game {
             if (goal) {
                 this.scoreGoal(goal);
             }
+
+            // Near-miss slow-mo: ball heading fast toward goal area
+            if (!goal) {
+                const ballInGoalY = this.ball.y > this.field.goalY &&
+                                     this.ball.y < this.field.goalY + this.field.goalHeight;
+                const ballSpeed = Math.sqrt(this.ball.vx * this.ball.vx + this.ball.vy * this.ball.vy);
+                const nearLeftGoal = this.ball.x < this.field.x + 40 && this.ball.vx < -3;
+                const nearRightGoal = this.ball.x > this.field.x + this.field.width - 40 && this.ball.vx > 3;
+
+                if (ballInGoalY && ballSpeed > 6 && (nearLeftGoal || nearRightGoal)) {
+                    this.timeScale = Math.max(0.4, this.timeScale * 0.95);
+                } else {
+                    this.timeScale = Math.min(1.0, this.timeScale + 0.05);
+                }
+            }
         }
     }
 
@@ -425,9 +491,11 @@ class Game {
             const dx = p.x - kicker.x;
             const dy = p.y - kicker.y;
             const n = Physics.normalize(dx, dy);
-            p.vx = n.x * 8;
-            p.vy = n.y * 8;
-            p.stunTimer = 1000;
+            // Add knockback to existing velocity for smoother feel
+            p.vx += n.x * 6;
+            p.vy += n.y * 6;
+            p.stunTimer = 700;
+            this.renderer.spawnHitFlash(p.x, p.y, 0.6);
         }
     }
 
@@ -455,6 +523,16 @@ class Game {
 
         this.isGoalScored = true;
         this.goalTimer = 2500;
+
+        // Heavy screen shake on goal
+        this.renderer.triggerShake(1.0);
+
+        // Slow-motion on goal
+        this.timeScale = 0.3;
+        setTimeout(() => { this.timeScale = 1.0; }, 800);
+
+        // Momentum boost for scoring team
+        this.addMomentum(team, 2);
 
         // Confetti explosion
         this.renderer.spawnConfetti(team);
@@ -512,6 +590,39 @@ class Game {
         resultOverlay.classList.remove('hidden');
     }
 
+    addMomentum(team, amount = 1) {
+        this.momentum[team] = Math.min(this.momentum.max, this.momentum[team] + amount);
+    }
+
+    switchToNearestTeammate() {
+        if (!this.humanPlayer) return;
+        const teammates = this.players.filter(p =>
+            p.team === this.humanPlayer.team && p !== this.humanPlayer && !p.isKeeper
+        );
+        if (teammates.length === 0) return;
+
+        let nearest = null;
+        let nearestDist = Infinity;
+        for (const t of teammates) {
+            const d = Physics.distance(t, this.ball);
+            if (d < nearestDist) {
+                nearestDist = d;
+                nearest = t;
+            }
+        }
+
+        if (nearest) {
+            // Old human becomes AI
+            this.humanPlayer.isHuman = false;
+            this.aiControllers.push({ player: this.humanPlayer, ai: new AIController(this.settings.difficulty) });
+
+            // New human
+            nearest.isHuman = true;
+            this.aiControllers = this.aiControllers.filter(c => c.player !== nearest);
+            this.humanPlayer = nearest;
+        }
+    }
+
     render() {
         this.renderer.clear();
         this.renderer.trackedBall = this.ball;
@@ -530,6 +641,9 @@ class Game {
 
         // Ball
         this.renderer.drawBall(this.ball);
+
+        // Hit flash particles
+        this.renderer.drawHitFlashes();
 
         // Confetti (on top of everything)
         this.renderer.drawConfetti();

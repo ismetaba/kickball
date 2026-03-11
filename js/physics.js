@@ -1,18 +1,18 @@
 // Physics engine for circle-based 2D soccer
 const Physics = {
-    FRICTION: 0.94,
-    BALL_FRICTION: 0.985,
-    WALL_BOUNCE: 0.5,
+    FRICTION: 0.92,
+    BALL_FRICTION: 0.992,
+    WALL_BOUNCE: 0.7,
     PLAYER_BOUNCE: 0.35,
-    BALL_BOUNCE: 0.55,
-    MAX_PLAYER_SPEED: 2.2,
-    MAX_BALL_SPEED: 22,
-    KICK_FORCE: 9,
-    POWER_KICK_FORCE: 22,
-    DASH_FORCE: 4.5,
-    DASH_COOLDOWN: 3000,
+    BALL_BOUNCE: 0.7,
+    MAX_PLAYER_SPEED: 3.0,
+    MAX_BALL_SPEED: 28,
+    KICK_FORCE: 13,
+    POWER_KICK_FORCE: 28,
+    DASH_FORCE: 5.5,
+    DASH_COOLDOWN: 1800,
     DASH_DURATION: 180,
-    PLAYER_ACCELERATION: 0.25,
+    PLAYER_ACCELERATION: 0.4,
 
     distance(a, b) {
         const dx = a.x - b.x;
@@ -209,7 +209,7 @@ const Physics = {
     checkGoal(ball, field) {
         const goalTop = field.goalY;
         const goalBottom = field.goalY + field.goalHeight;
-        const scoreLine = field.goalDepth * 0.5; // Ball must go halfway into the net
+        const scoreLine = field.goalDepth * 0.25; // Ball crossing the line counts
 
         if (ball.y > goalTop && ball.y < goalBottom) {
             if (ball.x < field.x - scoreLine) return 'blue';

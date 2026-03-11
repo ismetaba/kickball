@@ -41,7 +41,7 @@ class AIController {
             return { kick: false, dash: false };
         }
 
-        this.decisionTimer = this.reactionTime + Math.random() * 100;
+        this.decisionTimer = this.reactionTime + Math.random() * 200;
 
         // Assign roles based on position
         this.assignRole(player, ball, field, teammates);
@@ -77,7 +77,10 @@ class AIController {
 
             // Kick towards goal if facing it, or pass
             if (distToGoal < field.width * 0.6 || Math.random() < this.aggressiveness) {
-                kick = true;
+                // Hesitation: sometimes AI doesn't kick even when in range
+                if (Math.random() < this.accuracy) {
+                    kick = true;
+                }
 
                 // Add inaccuracy
                 const inaccuracy = (1 - this.accuracy) * 40;
@@ -154,8 +157,14 @@ class AIController {
         const goalX = player.team === 'red' ? field.x : field.x + field.width;
         const goalY = field.centerY;
 
-        const defX = goalX + (ball.x - goalX) * 0.3 * this.positioningSkill;
-        const defY = goalY + (ball.y - goalY) * 0.5 * this.positioningSkill;
+        let defX = goalX + (ball.x - goalX) * 0.3 * this.positioningSkill;
+        let defY = goalY + (ball.y - goalY) * 0.5 * this.positioningSkill;
+
+        // Occasional mispositioning: drift from ideal position
+        const wobble = (1 - this.positioningSkill) * 0.5;
+        if (Math.random() < wobble) {
+            defY += (Math.random() - 0.5) * field.height * 0.2;
+        }
 
         this.targetX = defX;
         this.targetY = defY;
@@ -204,19 +213,22 @@ class GoalkeeperAI {
     setDifficulty(difficulty) {
         switch (difficulty) {
             case 'easy':
-                this.reflexSpeed = 0.04;
+                this.reflexSpeed = 0.03;
                 this.diveSpeed = 0.6;
                 this.rushDistance = 0.6;
+                this.mistakeChance = 0.12;
                 break;
             case 'hard':
-                this.reflexSpeed = 0.12;
+                this.reflexSpeed = 0.09;
                 this.diveSpeed = 1.0;
                 this.rushDistance = 1.0;
+                this.mistakeChance = 0.02;
                 break;
             default: // medium
-                this.reflexSpeed = 0.08;
+                this.reflexSpeed = 0.06;
                 this.diveSpeed = 0.8;
                 this.rushDistance = 0.8;
+                this.mistakeChance = 0.06;
         }
     }
 
@@ -263,6 +275,11 @@ class GoalkeeperAI {
         // Smooth tracking of ball Y (with reflex speed)
         const trackingSpeed = this.reflexSpeed;
         this.smoothY += (ball.y - this.smoothY) * trackingSpeed;
+
+        // Goalkeeper mistake: occasionally misjudge position
+        if (Math.random() < this.mistakeChance) {
+            this.smoothY += (Math.random() - 0.5) * field.goalHeight * 0.3;
+        }
 
         // Clamp smoothY to goal area
         const clampedY = Math.max(goalTop + player.radius, Math.min(goalBottom - player.radius, this.smoothY));

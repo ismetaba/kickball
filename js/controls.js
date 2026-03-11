@@ -98,6 +98,17 @@ class Controls {
             dashBtn.style.transform = '';
         });
 
+        // Switch/Swap button
+        const switchBtn = document.getElementById('btn-switch');
+        switchBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            this.game.input.switchPlayer = true;
+            switchBtn.style.transform = 'scale(0.9)';
+        }, { passive: false });
+        switchBtn.addEventListener('touchend', (e) => {
+            switchBtn.style.transform = '';
+        });
+
         // Prevent scrolling/zooming
         document.addEventListener('touchmove', (e) => {
             if (e.target.closest('#game-screen')) {
@@ -155,6 +166,10 @@ class Controls {
                     this.game.input.dash = true;
                 }
                 this.lastDashKeyTapTime = now;
+            }
+            if (e.key === 'Tab' || e.key === 'c' || e.key === 'C') {
+                e.preventDefault();
+                this.game.input.switchPlayer = true;
             }
             if (e.key === 'Escape') {
                 if (this.game.isRunning && !this.game.matchOver) {

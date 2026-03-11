@@ -32,6 +32,7 @@ class Player {
         this.tackleDirY = 0;
         this.kickChargeRatio = 0;
         this.stunTimer = 0;
+        this.momentumBonus = 0;
     }
 
     reset() {
@@ -49,11 +50,13 @@ class Player {
     }
 
     update(dt) {
-        // Stunned: can't do anything, just sit still
+        // Stunned: can't move, slide to a smooth stop
         if (this.stunTimer > 0) {
             this.stunTimer -= dt;
-            this.vx *= 0.8;
-            this.vy *= 0.8;
+            // Frame-rate independent damping: decay ~0.3% per ms
+            const damping = Math.pow(0.997, dt);
+            this.vx *= damping;
+            this.vy *= damping;
             this.x += this.vx;
             this.y += this.vy;
             return;
@@ -106,13 +109,17 @@ class Player {
     }
 
     getMaxSpeed() {
-        if (this.powerUp === 'speed') return Physics.MAX_PLAYER_SPEED * 1.5;
-        return Physics.MAX_PLAYER_SPEED;
+        let base = Physics.MAX_PLAYER_SPEED;
+        if (this.powerUp === 'speed') base *= 1.5;
+        if (this.momentumBonus) base *= (1 + this.momentumBonus * 0.15);
+        return base;
     }
 
     getKickForce() {
-        if (this.powerUp === 'power') return Physics.POWER_KICK_FORCE;
-        return Physics.KICK_FORCE;
+        let base = Physics.KICK_FORCE;
+        if (this.powerUp === 'power') base = Physics.POWER_KICK_FORCE;
+        if (this.momentumBonus) base *= (1 + this.momentumBonus * 0.2);
+        return base;
     }
 
     applyInput(inputX, inputY) {

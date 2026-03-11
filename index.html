@@ -6,7 +6,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <title>KickZone - Mobile Soccer</title>
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/style.css?v=6">
 </head>
 <body>
     <!-- Main Menu -->
@@ -140,6 +140,10 @@
                 <span id="blue-score" class="team-score blue">0</span>
             </div>
             <button id="btn-pause" class="pause-btn">&#10074;&#10074;</button>
+            <div id="momentum-bar">
+                <div id="momentum-fill-red" class="momentum-fill red"></div>
+                <div id="momentum-fill-blue" class="momentum-fill blue"></div>
+            </div>
         </div>
 
         <!-- Goal notification -->
@@ -164,6 +168,7 @@
                 </div>
             </div>
             <div id="action-buttons">
+                <button id="btn-switch" class="action-btn switch-btn">SWAP</button>
                 <button id="btn-kick" class="action-btn kick-btn">KICK</button>
                 <button id="btn-dash" class="action-btn dash-btn">DASH</button>
             </div>
@@ -191,14 +196,14 @@
         </div>
     </div>
 
-    <script src="js/physics.js"></script>
-    <script src="js/entities.js"></script>
-    <script src="js/ai.js"></script>
-    <script src="js/powerups.js"></script>
-    <script src="js/renderer.js"></script>
-    <script src="js/game.js"></script>
-    <script src="js/controls.js"></script>
-    <script src="js/ui.js"></script>
-    <script src="js/main.js"></script>
+    <script src="js/physics.js?v=6"></script>
+    <script src="js/entities.js?v=6"></script>
+    <script src="js/ai.js?v=6"></script>
+    <script src="js/powerups.js?v=6"></script>
+    <script src="js/renderer.js?v=6"></script>
+    <script src="js/game.js?v=6"></script>
+    <script src="js/controls.js?v=6"></script>
+    <script src="js/ui.js?v=6"></script>
+    <script src="js/main.js?v=6"></script>
 </body>
 </html>

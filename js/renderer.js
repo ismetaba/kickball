@@ -10,6 +10,7 @@ class Renderer {
         this.netRipple = { left: 0, right: 0 };
         this.netRippleHitY = { left: 0.5, right: 0.5 };
         this.screenShake = 0;
+        this.hitFlashes = [];
         this.resize();
     }
 
@@ -32,7 +33,12 @@ class Renderer {
             this.screenShake *= 0.85;
             if (this.screenShake < 0.01) this.screenShake = 0;
         }
-        this.ctx.fillStyle = '#2d5a27';
+        // Neon arcade background
+        const grad = this.ctx.createLinearGradient(0, 0, 0, this.h);
+        grad.addColorStop(0, '#0a0e27');
+        grad.addColorStop(0.5, '#121638');
+        grad.addColorStop(1, '#0a0e27');
+        this.ctx.fillStyle = grad;
         this.ctx.fillRect(-10, -10, this.w + 20, this.h + 20);
     }
 
@@ -46,18 +52,33 @@ class Renderer {
 
     drawField(field) {
         const ctx = this.ctx;
+        const time = Date.now() * 0.001;
 
-        // Grass pattern
-        ctx.fillStyle = '#3a7a33';
-        for (let i = 0; i < 8; i++) {
-            if (i % 2 === 0) {
-                const stripeW = field.width / 8;
-                ctx.fillRect(field.x + i * stripeW, field.y, stripeW, field.height);
-            }
+        // Dark playing surface with subtle grid
+        ctx.fillStyle = 'rgba(20, 25, 60, 0.9)';
+        ctx.fillRect(field.x, field.y, field.width, field.height);
+
+        // Animated grid pattern
+        ctx.strokeStyle = 'rgba(80, 120, 255, 0.06)';
+        ctx.lineWidth = 1;
+        const gridSize = 40;
+        for (let gx = field.x; gx <= field.x + field.width; gx += gridSize) {
+            ctx.beginPath();
+            ctx.moveTo(gx, field.y);
+            ctx.lineTo(gx, field.y + field.height);
+            ctx.stroke();
+        }
+        for (let gy = field.y; gy <= field.y + field.height; gy += gridSize) {
+            ctx.beginPath();
+            ctx.moveTo(field.x, gy);
+            ctx.lineTo(field.x + field.width, gy);
+            ctx.stroke();
         }
 
-        // Field outline
-        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+        // Neon field outline with glow
+        ctx.shadowColor = '#00e5ff';
+        ctx.shadowBlur = 12;
+        ctx.strokeStyle = 'rgba(0, 229, 255, 0.7)';
         ctx.lineWidth = 2;
         ctx.strokeRect(field.x, field.y, field.width, field.height);
 
@@ -72,10 +93,12 @@ class Renderer {
         ctx.arc(field.centerX, field.centerY, field.centerRadius, 0, Math.PI * 2);
         ctx.stroke();
 
-        // Center dot
-        ctx.fillStyle = 'rgba(255,255,255,0.6)';
+        // Center dot - pulsing
+        const pulse = 4 + Math.sin(time * 3) * 1.5;
+        ctx.shadowBlur = 20;
+        ctx.fillStyle = '#00e5ff';
         ctx.beginPath();
-        ctx.arc(field.centerX, field.centerY, 4, 0, Math.PI * 2);
+        ctx.arc(field.centerX, field.centerY, pulse, 0, Math.PI * 2);
         ctx.fill();
 
         // Penalty areas
@@ -87,21 +110,36 @@ class Renderer {
             field.penaltyHeight
         );
 
+        // Team zone gradients (subtle colored fog on each half)
+        const redZone = ctx.createLinearGradient(field.x, 0, field.centerX, 0);
+        redZone.addColorStop(0, 'rgba(233, 69, 96, 0.06)');
+        redZone.addColorStop(1, 'transparent');
+        ctx.fillStyle = redZone;
+        ctx.fillRect(field.x, field.y, field.width / 2, field.height);
+
+        const blueZone = ctx.createLinearGradient(field.centerX, 0, field.x + field.width, 0);
+        blueZone.addColorStop(0, 'transparent');
+        blueZone.addColorStop(1, 'rgba(83, 216, 251, 0.06)');
+        ctx.fillStyle = blueZone;
+        ctx.fillRect(field.centerX, field.y, field.width / 2, field.height);
+
+        ctx.shadowBlur = 0;
+
         // Goals
         const goalDepth = field.goalDepth;
         const gTop = field.goalY;
         const gBot = field.goalY + field.goalHeight;
         const gHeight = field.goalHeight;
         const netSpacing = 12;
-        const time = Date.now() * 0.003;
+        const netTime = Date.now() * 0.003;
 
         // Calculate ball push for each goal (dynamic net deformation)
         const ballPushLeft = this.calcBallPush(this.trackedBall, field, 'left');
         const ballPushRight = this.calcBallPush(this.trackedBall, field, 'right');
 
-        this.drawGoalNet(ctx, field.x, gTop, gBot, gHeight, goalDepth, netSpacing, time, 'left',
+        this.drawGoalNet(ctx, field.x, gTop, gBot, gHeight, goalDepth, netSpacing, netTime, 'left',
             'rgba(233,69,96,', '#e94560', this.netRipple.left, this.netRippleHitY.left, ballPushLeft);
-        this.drawGoalNet(ctx, field.x + field.width, gTop, gBot, gHeight, goalDepth, netSpacing, time, 'right',
+        this.drawGoalNet(ctx, field.x + field.width, gTop, gBot, gHeight, goalDepth, netSpacing, netTime, 'right',
             'rgba(83,216,251,', '#53d8fb', this.netRipple.right, this.netRippleHitY.right, ballPushRight);
     }
 
@@ -209,11 +247,24 @@ class Renderer {
             ctx.stroke();
         }
 
-        // Goal posts (thick white bars with rounded look)
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 8;
+        // Goal posts with neon glow
+        ctx.shadowColor = solidColor;
+        ctx.shadowBlur = 15;
+        ctx.strokeStyle = solidColor;
+        ctx.lineWidth = 6;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(lineX, gTop);
+        ctx.lineTo(backX, gTop);
+        ctx.lineTo(backX, gBot);
+        ctx.lineTo(lineX, gBot);
+        ctx.stroke();
+
+        // Inner white highlight
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(lineX, gTop);
         ctx.lineTo(backX, gTop);
@@ -223,31 +274,21 @@ class Renderer {
         ctx.lineCap = 'butt';
         ctx.lineJoin = 'miter';
 
-        // Inner post highlight
-        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(lineX, gTop + 2);
-        ctx.lineTo(backX + (side === 'left' ? 2 : -2), gTop + 2);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(lineX, gBot - 2);
-        ctx.lineTo(backX + (side === 'left' ? 2 : -2), gBot - 2);
-        ctx.stroke();
-
-        // Post caps (colored circles) - bigger
+        // Post caps (neon circles)
+        ctx.shadowColor = solidColor;
+        ctx.shadowBlur = 12;
         ctx.fillStyle = solidColor;
-        ctx.beginPath(); ctx.arc(lineX, gTop, 8, 0, Math.PI * 2); ctx.fill();
-        ctx.beginPath(); ctx.arc(lineX, gBot, 8, 0, Math.PI * 2); ctx.fill();
-        // White ring on caps
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(lineX, gTop, 8, 0, Math.PI * 2); ctx.stroke();
-        ctx.beginPath(); ctx.arc(lineX, gBot, 8, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(lineX, gTop, 7, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(lineX, gBot, 7, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0;
+        // White center on caps
+        ctx.fillStyle = '#fff';
+        ctx.beginPath(); ctx.arc(lineX, gTop, 3, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(lineX, gBot, 3, 0, Math.PI * 2); ctx.fill();
         // Back corner caps
-        ctx.fillStyle = rgba + '0.7)';
-        ctx.beginPath(); ctx.arc(backX, gTop, 5, 0, Math.PI * 2); ctx.fill();
-        ctx.beginPath(); ctx.arc(backX, gBot, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = rgba + '0.5)';
+        ctx.beginPath(); ctx.arc(backX, gTop, 4, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(backX, gBot, 4, 0, Math.PI * 2); ctx.fill();
     }
 
     triggerNetRipple(side, ballY, field) {
@@ -298,38 +339,40 @@ class Renderer {
             ctx.arc(ball.x, ball.y, glowSize, 0, Math.PI * 2);
             ctx.fill();
         } else {
-            // Normal trail
+            // Normal trail - neon blue-white
             for (const t of ball.trail) {
-                ctx.fillStyle = `rgba(255,255,255,${t.life * 0.3})`;
+                ctx.fillStyle = `rgba(160,200,255,${t.life * 0.35})`;
                 ctx.beginPath();
                 ctx.arc(t.x, t.y, ball.radius * t.life, 0, Math.PI * 2);
                 ctx.fill();
             }
         }
 
-        // Shadow
-        ctx.fillStyle = 'rgba(0,0,0,0.2)';
-        ctx.beginPath();
-        ctx.ellipse(ball.x + 2, ball.y + 3, ball.radius, ball.radius * 0.7, 0, 0, Math.PI * 2);
-        ctx.fill();
+        // Neon glow under ball
+        ctx.shadowColor = isSuper ? '#ff8800' : '#ffffff';
+        ctx.shadowBlur = isSuper ? 25 : 15;
 
         // Ball body
         if (isSuper && ballSpeed > 2) {
-            // Fiery ball
             const ballGrad = ctx.createRadialGradient(ball.x - 3, ball.y - 3, 0, ball.x, ball.y, ball.radius);
             ballGrad.addColorStop(0, '#fff');
             ballGrad.addColorStop(0.4, '#ffdd44');
             ballGrad.addColorStop(1, '#ff6600');
             ctx.fillStyle = ballGrad;
         } else {
-            ctx.fillStyle = '#fff';
+            const ballGrad = ctx.createRadialGradient(ball.x - 2, ball.y - 2, 0, ball.x, ball.y, ball.radius);
+            ballGrad.addColorStop(0, '#ffffff');
+            ballGrad.addColorStop(0.7, '#e0e8ff');
+            ballGrad.addColorStop(1, '#a0b0ff');
+            ctx.fillStyle = ballGrad;
         }
         ctx.beginPath();
         ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
         ctx.fill();
 
         // Ball pattern (pentagon style) - rotates faster with spin
-        ctx.fillStyle = '#ddd';
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = 'rgba(100,130,255,0.3)';
         const spinSpeed = ball.spin ? ball.spin * 0.05 : 0;
         const angle = Date.now() * (0.002 + spinSpeed);
         for (let i = 0; i < 5; i++) {
@@ -341,9 +384,9 @@ class Renderer {
             ctx.fill();
         }
 
-        // Ball outline
-        ctx.strokeStyle = '#bbb';
-        ctx.lineWidth = 1;
+        // Ball outline - neon ring
+        ctx.strokeStyle = 'rgba(160,180,255,0.6)';
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
         ctx.stroke();
@@ -352,10 +395,10 @@ class Renderer {
     drawPlayer(player, isControlled = false) {
         const ctx = this.ctx;
 
-        // Shadow
-        ctx.fillStyle = 'rgba(0,0,0,0.2)';
+        // Shadow (softer on dark background)
+        ctx.fillStyle = 'rgba(0,0,0,0.35)';
         ctx.beginPath();
-        ctx.ellipse(player.x + 2, player.y + 3, player.radius, player.radius * 0.7, 0, 0, Math.PI * 2);
+        ctx.ellipse(player.x + 2, player.y + 4, player.radius * 0.9, player.radius * 0.5, 0, 0, Math.PI * 2);
         ctx.fill();
 
         // Dash effect
@@ -413,22 +456,31 @@ class Renderer {
             ctx.setLineDash([]);
         }
 
-        // Stunned effect (dizzy stars)
+        // Stunned effect (orbiting neon sparks + wobble)
         if (player.stunTimer > 0) {
-            const time = Date.now() * 0.004;
-            const starDist = player.radius + 10;
-            ctx.fillStyle = '#ffdd00';
-            ctx.font = '14px sans-serif';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            for (let i = 0; i < 3; i++) {
-                const a = time + (i * Math.PI * 2) / 3;
-                const sx = player.x + Math.cos(a) * starDist;
-                const sy = player.y - player.radius - 5 + Math.sin(a * 2) * 4;
-                ctx.fillText('*', sx, sy);
+            const time = Date.now() * 0.005;
+            const orbitDist = player.radius + 8;
+            const stunRatio = Math.min(player.stunTimer / 400, 1); // fade out near end
+
+            // Orbiting sparks
+            for (let i = 0; i < 4; i++) {
+                const a = time + (i * Math.PI * 2) / 4;
+                const sx = player.x + Math.cos(a) * orbitDist;
+                const sy = player.y + Math.sin(a) * orbitDist * 0.5 - player.radius * 0.3;
+                const sparkSize = 3 + Math.sin(time * 3 + i) * 1;
+
+                ctx.shadowColor = '#ffdd44';
+                ctx.shadowBlur = 8;
+                ctx.fillStyle = `rgba(255, 221, 68, ${stunRatio * 0.9})`;
+                ctx.beginPath();
+                ctx.arc(sx, sy, sparkSize, 0, Math.PI * 2);
+                ctx.fill();
             }
-            // Darkened overlay
-            ctx.fillStyle = 'rgba(0,0,0,0.3)';
+            ctx.shadowBlur = 0;
+
+            // Darkened overlay with slight pulse
+            const overlayAlpha = 0.2 + Math.sin(time * 4) * 0.08;
+            ctx.fillStyle = `rgba(0,0,0,${overlayAlpha * stunRatio})`;
             ctx.beginPath();
             ctx.arc(player.x, player.y, player.radius + 2, 0, Math.PI * 2);
             ctx.fill();
@@ -442,52 +494,94 @@ class Renderer {
             ctx.fill();
         }
 
-        // Player body
-        const baseColor = player.team === 'red' ? '#e94560' : '#53d8fb';
-        const darkColor = player.team === 'red' ? '#c73750' : '#3ba8d4';
+        // Player body with neon glow
+        const baseColor = player.team === 'red' ? '#ff4d6d' : '#4dd4ff';
+        const darkColor = player.team === 'red' ? '#cc2244' : '#2299cc';
+        const glowRGB = player.team === 'red' ? '255,77,109' : '77,212,255';
+
+        // Outer neon glow
+        ctx.shadowColor = baseColor;
+        ctx.shadowBlur = isControlled ? 20 : 10;
 
         const gradient = ctx.createRadialGradient(
             player.x - 3, player.y - 3, 0,
             player.x, player.y, player.radius
         );
-        gradient.addColorStop(0, baseColor);
+        gradient.addColorStop(0, '#fff');
+        gradient.addColorStop(0.3, baseColor);
         gradient.addColorStop(1, darkColor);
 
         ctx.fillStyle = gradient;
         ctx.beginPath();
         ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
         ctx.fill();
+        ctx.shadowBlur = 0;
+
+        // Momentum fire glow effect
+        if (player.momentumBonus > 0.7) {
+            const fireAlpha = (player.momentumBonus - 0.7) / 0.3;
+            const fireRadius = player.radius + 8 + Math.sin(Date.now() * 0.01) * 3;
+            const teamFireColor = player.team === 'red' ? '255,77,109' : '77,212,255';
+            const fireGrad = ctx.createRadialGradient(player.x, player.y, player.radius * 0.8, player.x, player.y, fireRadius);
+            fireGrad.addColorStop(0, `rgba(${teamFireColor},${fireAlpha * 0.4})`);
+            fireGrad.addColorStop(0.6, `rgba(255,200,50,${fireAlpha * 0.2})`);
+            fireGrad.addColorStop(1, 'transparent');
+            ctx.fillStyle = fireGrad;
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, fireRadius, 0, Math.PI * 2);
+            ctx.fill();
+        }
 
         // Player outline
-        ctx.strokeStyle = isControlled ? '#fff' : 'rgba(255,255,255,0.4)';
+        ctx.strokeStyle = isControlled ? '#fff' : `rgba(${glowRGB},0.6)`;
         ctx.lineWidth = isControlled ? 3 : 1.5;
         ctx.beginPath();
         ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
         ctx.stroke();
 
+        // Face - eyes that look toward movement direction
+        const speed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
+        let lookX = 0, lookY = 0;
+        if (speed > 0.3) {
+            const n = Physics.normalize(player.vx, player.vy);
+            lookX = n.x * 2;
+            lookY = n.y * 2;
+        }
+        // Eye whites
+        const eyeSpacing = player.radius * 0.3;
+        const eyeY = player.y - player.radius * 0.15;
+        const eyeSize = player.radius * 0.22;
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(player.x - eyeSpacing + lookX, eyeY + lookY, eyeSize, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(player.x + eyeSpacing + lookX, eyeY + lookY, eyeSize, 0, Math.PI * 2);
+        ctx.fill();
+        // Pupils
+        const pupilSize = eyeSize * 0.55;
+        ctx.fillStyle = '#111';
+        ctx.beginPath();
+        ctx.arc(player.x - eyeSpacing + lookX * 1.3, eyeY + lookY * 1.3, pupilSize, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(player.x + eyeSpacing + lookX * 1.3, eyeY + lookY * 1.3, pupilSize, 0, Math.PI * 2);
+        ctx.fill();
+
         // Direction indicator for controlled player
         if (isControlled) {
-            const speed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
-            if (speed > 0.5) {
-                const n = Physics.normalize(player.vx, player.vy);
-                ctx.fillStyle = '#fff';
-                ctx.beginPath();
-                ctx.arc(
-                    player.x + n.x * player.radius * 0.6,
-                    player.y + n.y * player.radius * 0.6,
-                    3, 0, Math.PI * 2
-                );
-                ctx.fill();
-            }
-
-            // Arrow indicator above
+            // Pulsing arrow indicator above
+            const arrowPulse = 1 + Math.sin(Date.now() * 0.008) * 0.15;
             ctx.fillStyle = '#fff';
+            ctx.shadowColor = '#fff';
+            ctx.shadowBlur = 8;
             ctx.beginPath();
-            ctx.moveTo(player.x, player.y - player.radius - 10);
-            ctx.lineTo(player.x - 5, player.y - player.radius - 5);
-            ctx.lineTo(player.x + 5, player.y - player.radius - 5);
+            ctx.moveTo(player.x, player.y - player.radius - 12 * arrowPulse);
+            ctx.lineTo(player.x - 6, player.y - player.radius - 5);
+            ctx.lineTo(player.x + 6, player.y - player.radius - 5);
             ctx.closePath();
             ctx.fill();
+            ctx.shadowBlur = 0;
         }
 
         // Kick range indicator (when near ball)
@@ -595,6 +689,47 @@ class Renderer {
         ctx.beginPath();
         ctx.arc(ball.x, ball.y, ball.radius + 4 + Math.sin(time * 4) * 2, 0, Math.PI * 2);
         ctx.stroke();
+    }
+
+    spawnHitFlash(x, y, intensity) {
+        const count = Math.floor(6 + intensity * 8);
+        for (let i = 0; i < count; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 1 + Math.random() * 3 * intensity;
+            this.hitFlashes.push({
+                x, y,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed,
+                life: 1.0,
+                decay: 0.04 + Math.random() * 0.03,
+                size: 2 + Math.random() * 3 * intensity,
+                color: intensity > 0.5 ? '#ffdd44' : '#fff',
+            });
+        }
+    }
+
+    updateHitFlashes() {
+        for (let i = this.hitFlashes.length - 1; i >= 0; i--) {
+            const p = this.hitFlashes[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.vx *= 0.92;
+            p.vy *= 0.92;
+            p.life -= p.decay;
+            if (p.life <= 0) this.hitFlashes.splice(i, 1);
+        }
+    }
+
+    drawHitFlashes() {
+        const ctx = this.ctx;
+        for (const p of this.hitFlashes) {
+            ctx.globalAlpha = p.life;
+            ctx.fillStyle = p.color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1;
     }
 
     drawDashCooldown(player) {
