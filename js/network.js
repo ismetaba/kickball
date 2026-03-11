@@ -275,12 +275,14 @@ class NetworkManager {
         this.send({ t: 'state', d: this.serializeState(game) });
     }
 
-    // Guest: send input (throttled)
+    // Guest: send input (throttled, but one-shot actions always send immediately)
     sendInput(input) {
         const now = performance.now();
-        if (now - this.lastInputSend < this.INPUT_SEND_INTERVAL) return;
+        const hasOneShot = input.kickRelease || input.dash || input.tackle || input.switchPlayer;
+        if (!hasOneShot && now - this.lastInputSend < this.INPUT_SEND_INTERVAL) return;
         this.lastInputSend = now;
         this.send({ t: 'input', d: this.serializeInput(input) });
+        return true; // signal that input was actually sent
     }
 
     sendMatchStart(settings) {

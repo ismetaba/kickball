@@ -314,7 +314,7 @@ class Game {
     update(dt) {
         // Guest: run local prediction for own player, send input to host
         if (this.isOnline && !this.isHost) {
-            if (this.network) this.network.sendInput(this.input);
+            const sent = this.network ? this.network.sendInput(this.input) : false;
 
             // Local prediction: apply own input immediately for responsiveness
             const hp = this.humanPlayer;
@@ -343,11 +343,13 @@ class Game {
                 hp.y = Math.max(f.y + hp.radius, Math.min(f.y + f.height - hp.radius, hp.y));
             }
 
-            // Consume one-shot inputs
-            this.input.kickRelease = false;
-            this.input.dash = false;
-            this.input.tackle = false;
-            this.input.switchPlayer = false;
+            // Only consume one-shot inputs after they were actually sent
+            if (sent) {
+                this.input.kickRelease = false;
+                this.input.dash = false;
+                this.input.tackle = false;
+                this.input.switchPlayer = false;
+            }
             return;
         }
 
