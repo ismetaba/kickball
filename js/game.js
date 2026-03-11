@@ -312,14 +312,45 @@ class Game {
     }
 
     update(dt) {
-        // Guest: don't run physics, just send input
+        // Guest: run local prediction for own player, send input to host
         if (this.isOnline && !this.isHost) {
             if (this.network) this.network.sendInput(this.input);
-            // Consume one-shot inputs so they don't re-send
+
+            // Local prediction: apply own input immediately for responsiveness
+            const hp = this.humanPlayer;
+            if (hp && hp.stunTimer <= 0 && hp.powerUp !== 'frozen') {
+                hp.applyInput(this.input.x, this.input.y);
+
+                if (this.input.kickCharging) {
+                    hp.kickChargeRatio = Math.min(this.input.kickChargeTime / 1000, 1);
+                } else {
+                    hp.kickChargeRatio = 0;
+                }
+
+                if (this.input.dash) hp.dash();
+                if (this.input.tackle) hp.tackle(this.ball);
+                if (this.input.switchPlayer) this.switchToNearestTeammate();
+
+                // Move own player locally
+                hp.vx *= Math.pow(0.92, dt / 16.67);
+                hp.vy *= Math.pow(0.92, dt / 16.67);
+                hp.x += hp.vx * dt / 16.67;
+                hp.y += hp.vy * dt / 16.67;
+
+                // Keep in bounds
+                const f = this.field;
+                hp.x = Math.max(f.x + hp.radius, Math.min(f.x + f.width - hp.radius, hp.x));
+                hp.y = Math.max(f.y + hp.radius, Math.min(f.y + f.height - hp.radius, hp.y));
+            }
+
+            // Consume one-shot inputs
             this.input.kickRelease = false;
             this.input.dash = false;
             this.input.tackle = false;
             this.input.switchPlayer = false;
+
+            // Still render
+            this.renderer.draw(this);
             return;
         }
 

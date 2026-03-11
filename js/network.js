@@ -24,8 +24,8 @@ class NetworkManager {
         // Throttle timers
         this.lastStateSend = 0;
         this.lastInputSend = 0;
-        this.STATE_SEND_INTERVAL = 50;  // ~20Hz
-        this.INPUT_SEND_INTERVAL = 33;  // ~30Hz
+        this.STATE_SEND_INTERVAL = 33;  // ~30Hz
+        this.INPUT_SEND_INTERVAL = 25;  // ~40Hz
     }
 
     generateRoomCode() {
@@ -143,30 +143,26 @@ class NetworkManager {
     // --- State Serialization (compact) ---
     serializeState(game) {
         const players = game.players.map(p => ({
-            x: Math.round(p.x * 10) / 10,
-            y: Math.round(p.y * 10) / 10,
-            vx: Math.round(p.vx * 100) / 100,
-            vy: Math.round(p.vy * 100) / 100,
-            team: p.team,
-            isHuman: p.isHuman,
-            isDashing: p.isDashing,
-            isTackling: p.isTackling,
-            stunTimer: Math.round(p.stunTimer),
-            kickCooldown: Math.round(p.kickCooldown),
-            kickChargeRatio: Math.round(p.kickChargeRatio * 100) / 100,
-            powerUp: p.powerUp,
-            powerUpTimer: Math.round(p.powerUpTimer),
-            radius: p.radius,
-            momentumBonus: Math.round(p.momentumBonus * 100) / 100,
+            x: Math.round(p.x),
+            y: Math.round(p.y),
+            vx: Math.round(p.vx * 10) / 10,
+            vy: Math.round(p.vy * 10) / 10,
+            d: p.isDashing ? 1 : 0,
+            t: p.isTackling ? 1 : 0,
+            s: Math.round(p.stunTimer),
+            k: Math.round(p.kickChargeRatio * 100) / 100,
+            pu: p.powerUp || 0,
+            pt: Math.round(p.powerUpTimer),
+            r: p.radius,
         }));
 
         const ball = {
-            x: Math.round(game.ball.x * 10) / 10,
-            y: Math.round(game.ball.y * 10) / 10,
-            vx: Math.round(game.ball.vx * 100) / 100,
-            vy: Math.round(game.ball.vy * 100) / 100,
-            spin: Math.round((game.ball.spin || 0) * 100) / 100,
-            superKick: game.ball.superKick || 0,
+            x: Math.round(game.ball.x),
+            y: Math.round(game.ball.y),
+            vx: Math.round(game.ball.vx * 10) / 10,
+            vy: Math.round(game.ball.vy * 10) / 10,
+            sp: Math.round((game.ball.spin || 0) * 10) / 10,
+            sk: game.ball.superKick || 0,
         };
 
         const state = {
@@ -195,33 +191,34 @@ class NetworkManager {
 
     // Guest applies state snapshot
     deserializeState(snapshot, game) {
-        const lerpFactor = 0.3;
+        const lerpRemote = 0.5;   // Other players — snap faster
+        const lerpLocal = 0.15;   // Own player — trust local prediction
+        const lerpBall = 0.5;
 
         for (let i = 0; i < snapshot.p.length && i < game.players.length; i++) {
             const sp = snapshot.p[i];
             const gp = game.players[i];
-            gp.x += (sp.x - gp.x) * lerpFactor;
-            gp.y += (sp.y - gp.y) * lerpFactor;
+            // Use softer lerp for the local player (client-side predicted)
+            const factor = (gp === game.humanPlayer) ? lerpLocal : lerpRemote;
+            gp.x += (sp.x - gp.x) * factor;
+            gp.y += (sp.y - gp.y) * factor;
             gp.vx = sp.vx;
             gp.vy = sp.vy;
-            gp.isDashing = sp.isDashing;
-            gp.isTackling = sp.isTackling;
-            gp.stunTimer = sp.stunTimer;
-            gp.kickCooldown = sp.kickCooldown;
-            gp.kickChargeRatio = sp.kickChargeRatio;
-            gp.powerUp = sp.powerUp;
-            gp.powerUpTimer = sp.powerUpTimer;
-            gp.radius = sp.radius;
-            gp.momentumBonus = sp.momentumBonus;
+            gp.isDashing = !!sp.d;
+            gp.isTackling = !!sp.t;
+            gp.stunTimer = sp.s;
+            if (gp !== game.humanPlayer) gp.kickChargeRatio = sp.k;
+            gp.powerUp = sp.pu || null;
+            gp.powerUpTimer = sp.pt;
+            gp.radius = sp.r;
         }
 
-        const lerpBall = 0.35;
         game.ball.x += (snapshot.b.x - game.ball.x) * lerpBall;
         game.ball.y += (snapshot.b.y - game.ball.y) * lerpBall;
         game.ball.vx = snapshot.b.vx;
         game.ball.vy = snapshot.b.vy;
-        game.ball.spin = snapshot.b.spin;
-        game.ball.superKick = snapshot.b.superKick;
+        game.ball.spin = snapshot.b.sp;
+        game.ball.superKick = snapshot.b.sk;
 
         game.redScore = snapshot.rs;
         game.blueScore = snapshot.bs;
