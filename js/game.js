@@ -348,9 +348,6 @@ class Game {
             this.input.dash = false;
             this.input.tackle = false;
             this.input.switchPlayer = false;
-
-            // Still render
-            this.renderer.draw(this);
             return;
         }
 
