@@ -677,6 +677,28 @@ class Game {
                 p.kickChargeRatio = 0;
             }
 
+            // Auto super kick for P2 (local 1v1)
+            if (collided && this.isLocal1v1 && p === this.humanPlayer2 && this.input2.kickCharging && p.kickChargeRatio >= 1.0) {
+                p.kick(this.ball, 1.0);
+                this.stats.shots.blue++;
+                this.renderer.triggerShake(0.8);
+                this.input2.kickCharging = false;
+                this.input2.kickRelease = false;
+                this.input2.kickChargeTime = 0;
+                p.kickChargeRatio = 0;
+            }
+
+            // Auto super kick for remote player (online host)
+            if (collided && this.isOnline && this.isHost && p === this.remoteHumanPlayer && this.remoteInput.kickCharging && p.kickChargeRatio >= 1.0) {
+                p.kick(this.ball, 1.0);
+                this.stats.shots.blue++;
+                this.renderer.triggerShake(0.8);
+                this.remoteInput.kickCharging = false;
+                this.remoteInput.kickRelease = false;
+                this.remoteInput.kickChargeTime = 0;
+                p.kickChargeRatio = 0;
+            }
+
             // Tackle: extra force on ball in tackle direction
             if (collided && p.isTackling) {
                 this.ball.vx += p.tackleDirX * Physics.KICK_FORCE * 0.8;
