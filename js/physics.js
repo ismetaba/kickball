@@ -73,27 +73,29 @@ const Physics = {
         return true;
     },
 
-    // Block player from entering a goal area. Uses a flat wall for the mouth
-    // with circular collision at goal posts for smooth corner sliding.
+    // Block player from passing through goal structure (posts, bars, back wall)
+    // but allow entering through the goal mouth (open front between posts).
     blockFromGoal(entity, mouthX, goalTop, goalBottom, goalDepth, isLeftGoal) {
         const r = entity.radius;
-        const postR = 5; // Goal post collision radius
+        const postR = 5;
+        const backX = isLeftGoal ? mouthX - goalDepth : mouthX + goalDepth;
 
-        // Only process if entity is near the goal area
-        const nearX = isLeftGoal
-            ? (entity.x - r < mouthX + r && entity.x > mouthX - goalDepth - r)
-            : (entity.x + r > mouthX - r && entity.x < mouthX + goalDepth + r);
-        if (!nearX) return;
-        if (entity.y + r < goalTop - r && entity.y - r > goalBottom + r) return;
+        // Early exit if not near the goal area
+        const minGX = Math.min(mouthX, backX);
+        const maxGX = Math.max(mouthX, backX);
+        if (entity.x + r < minGX - postR || entity.x - r > maxGX + postR) return;
+        if (entity.y + r < goalTop - postR || entity.y - r > goalBottom + postR) return;
 
-        // 1) Goal posts: circle collision at post corners (smooth rounding)
-        const posts = [
+        // 1) Circle collision at all 4 corners for smooth rounding
+        const corners = [
             { x: mouthX, y: goalTop },
-            { x: mouthX, y: goalBottom }
+            { x: mouthX, y: goalBottom },
+            { x: backX, y: goalTop },
+            { x: backX, y: goalBottom }
         ];
-        for (const post of posts) {
-            const dx = entity.x - post.x;
-            const dy = entity.y - post.y;
+        for (const c of corners) {
+            const dx = entity.x - c.x;
+            const dy = entity.y - c.y;
             const dist = Math.sqrt(dx * dx + dy * dy);
             const minDist = r + postR;
             if (dist < minDist && dist > 0.5) {
@@ -110,34 +112,57 @@ const Physics = {
             }
         }
 
-        // 2) Goal mouth wall: flat vertical wall between posts
-        // Only block if entity is between the posts (Y-wise) and approaching from the field
-        if (entity.y > goalTop + postR && entity.y < goalBottom - postR) {
-            if (isLeftGoal) {
-                if (entity.x - r < mouthX && entity.x > mouthX - goalDepth) {
-                    entity.x = mouthX + r;
-                    if (entity.vx < 0) entity.vx *= -this.WALL_BOUNCE;
+        // Check if entity center is in goal X range (between back wall and mouth)
+        const inGoalXRange = isLeftGoal
+            ? (entity.x > backX && entity.x < mouthX)
+            : (entity.x > mouthX && entity.x < backX);
+
+        // 2) Top/bottom bars — solid walls when entity is in goal X range
+        if (inGoalXRange) {
+            // Top bar at goalTop
+            if (entity.y - r < goalTop && entity.y + r > goalTop) {
+                if (entity.y >= goalTop) {
+                    entity.y = goalTop + r;
+                    if (entity.vy < 0) entity.vy *= -this.WALL_BOUNCE;
+                } else {
+                    entity.y = goalTop - r;
+                    if (entity.vy > 0) entity.vy *= -this.WALL_BOUNCE;
                 }
-            } else {
-                if (entity.x + r > mouthX && entity.x < mouthX + goalDepth) {
-                    entity.x = mouthX - r;
-                    if (entity.vx > 0) entity.vx *= -this.WALL_BOUNCE;
+            }
+            // Bottom bar at goalBottom
+            if (entity.y + r > goalBottom && entity.y - r < goalBottom) {
+                if (entity.y <= goalBottom) {
+                    entity.y = goalBottom - r;
+                    if (entity.vy > 0) entity.vy *= -this.WALL_BOUNCE;
+                } else {
+                    entity.y = goalBottom + r;
+                    if (entity.vy < 0) entity.vy *= -this.WALL_BOUNCE;
                 }
             }
         }
 
-        // 3) Top/bottom bars: only block from outside the goal
-        const behindMouth = isLeftGoal ? (entity.x < mouthX) : (entity.x > mouthX);
-        if (behindMouth) {
-            // Top bar: block from above
-            if (entity.y + r > goalTop && entity.y < goalTop + r) {
-                entity.y = goalTop - r;
-                if (entity.vy > 0) entity.vy *= -this.WALL_BOUNCE;
-            }
-            // Bottom bar: block from below
-            if (entity.y - r < goalBottom && entity.y > goalBottom - r) {
-                entity.y = goalBottom + r;
-                if (entity.vy < 0) entity.vy *= -this.WALL_BOUNCE;
+        // 3) Back wall — solid wall when entity is between the bars
+        if (entity.y > goalTop + postR && entity.y < goalBottom - postR) {
+            if (isLeftGoal) {
+                if (entity.x - r < backX && entity.x + r > backX) {
+                    if (entity.x >= backX) {
+                        entity.x = backX + r;
+                        if (entity.vx < 0) entity.vx *= -this.WALL_BOUNCE;
+                    } else {
+                        entity.x = backX - r;
+                        if (entity.vx > 0) entity.vx *= -this.WALL_BOUNCE;
+                    }
+                }
+            } else {
+                if (entity.x + r > backX && entity.x - r < backX) {
+                    if (entity.x <= backX) {
+                        entity.x = backX - r;
+                        if (entity.vx > 0) entity.vx *= -this.WALL_BOUNCE;
+                    } else {
+                        entity.x = backX + r;
+                        if (entity.vx < 0) entity.vx *= -this.WALL_BOUNCE;
+                    }
+                }
             }
         }
     },

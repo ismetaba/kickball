@@ -346,7 +346,7 @@ class Game {
         if (!this.isRunning) return;
 
         const now = performance.now();
-        const frameDt = Math.min(now - this.lastTime, 50);
+        const frameDt = Math.min(now - this.lastTime, 200);
         this.lastTime = now;
 
         if (!this.isPaused) {
@@ -354,10 +354,14 @@ class Game {
             // so game speed is independent of frame rate
             this.accumulator = (this.accumulator || 0) + frameDt;
             const STEP = 16.67;
-            while (this.accumulator >= STEP) {
+            let steps = 0;
+            while (this.accumulator >= STEP && steps < 12) {
                 this.update(STEP);
                 this.accumulator -= STEP;
+                steps++;
             }
+            // Prevent spiral of death: discard remaining if we maxed out steps
+            if (steps >= 12) this.accumulator = 0;
         }
 
         if (this.isGoalScored) {
