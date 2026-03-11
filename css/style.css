@@ -1,0 +1,487 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+}
+
+body {
+    background: #1a1a2e;
+    color: #eee;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    overflow: hidden;
+    width: 100vw;
+    height: 100vh;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.screen {
+    display: none;
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    z-index: 10;
+}
+.screen.active { display: flex; }
+
+/* ---- MENU ---- */
+.menu-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 100%; height: 100%;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    padding: 20px;
+}
+
+.game-title {
+    font-size: 56px;
+    font-weight: 900;
+    letter-spacing: 4px;
+    color: #e94560;
+    text-shadow: 0 0 30px rgba(233, 69, 96, 0.5);
+}
+.game-title span {
+    color: #53d8fb;
+    text-shadow: 0 0 30px rgba(83, 216, 251, 0.5);
+}
+.subtitle {
+    font-size: 14px;
+    color: #888;
+    margin-top: 4px;
+    letter-spacing: 6px;
+    text-transform: uppercase;
+}
+
+.menu-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 40px;
+    width: 100%;
+    max-width: 280px;
+}
+
+.menu-btn {
+    padding: 14px 28px;
+    border: 2px solid #53d8fb;
+    background: transparent;
+    color: #53d8fb;
+    font-size: 16px;
+    font-weight: 700;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}
+.menu-btn:active {
+    transform: scale(0.96);
+}
+.menu-btn.primary {
+    background: #e94560;
+    border-color: #e94560;
+    color: #fff;
+}
+.menu-btn.primary:active {
+    background: #c73750;
+}
+.menu-btn.secondary {
+    border-color: #666;
+    color: #999;
+}
+
+/* ---- SETTINGS ---- */
+.settings-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%; height: 100%;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    padding: 30px 20px;
+    overflow-y: auto;
+}
+.settings-container h2 {
+    font-size: 28px;
+    color: #53d8fb;
+    margin-bottom: 24px;
+}
+
+.setting-group {
+    width: 100%;
+    max-width: 360px;
+    margin-bottom: 16px;
+}
+.setting-group label {
+    display: block;
+    font-size: 13px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    margin-bottom: 8px;
+}
+.option-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.option-btn {
+    flex: 1;
+    min-width: 60px;
+    padding: 10px 12px;
+    border: 2px solid #333;
+    background: transparent;
+    color: #888;
+    font-size: 14px;
+    font-weight: 600;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.option-btn.active {
+    border-color: #53d8fb;
+    color: #53d8fb;
+    background: rgba(83, 216, 251, 0.1);
+}
+
+.btn-row {
+    display: flex;
+    gap: 12px;
+    margin-top: 24px;
+    width: 100%;
+    max-width: 360px;
+}
+.btn-row .menu-btn { flex: 1; }
+
+/* ---- HELP ---- */
+.help-content {
+    width: 100%;
+    max-width: 360px;
+    margin-bottom: 20px;
+}
+.help-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid #222;
+}
+.help-icon {
+    font-size: 28px;
+    min-width: 40px;
+    text-align: center;
+}
+.help-item h3 {
+    font-size: 16px;
+    color: #53d8fb;
+    margin-bottom: 2px;
+}
+.help-item p {
+    font-size: 13px;
+    color: #999;
+    line-height: 1.4;
+}
+
+/* ---- GAME HUD ---- */
+#game-hud {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 8px 16px;
+    z-index: 20;
+    pointer-events: none;
+}
+#score-display {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    background: rgba(0,0,0,0.7);
+    padding: 6px 20px;
+    border-radius: 20px;
+    backdrop-filter: blur(8px);
+}
+.team-score {
+    font-size: 28px;
+    font-weight: 900;
+    min-width: 30px;
+    text-align: center;
+}
+.team-score.red { color: #e94560; }
+.team-score.blue { color: #53d8fb; }
+#timer {
+    font-size: 18px;
+    color: #ccc;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+#btn-pause {
+    position: fixed;
+    top: 10px;
+    right: 16px;
+    background: rgba(0,0,0,0.5);
+    border: none;
+    color: #aaa;
+    font-size: 18px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    pointer-events: auto;
+    z-index: 25;
+    cursor: pointer;
+}
+
+/* ---- GOAL NOTIFICATION ---- */
+#goal-notification {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 30;
+    text-align: center;
+    pointer-events: none;
+}
+#goal-notification .goal-text {
+    display: block;
+    font-size: 80px;
+    font-weight: 900;
+    color: #fff;
+    text-shadow:
+        0 0 40px rgba(255, 255, 255, 0.6),
+        0 0 80px rgba(233, 69, 96, 0.8),
+        0 4px 0 rgba(0,0,0,0.3);
+    letter-spacing: 8px;
+    animation: goalPulse 0.6s cubic-bezier(0.17, 0.67, 0.35, 1.3);
+}
+#goal-notification .goal-scorer {
+    display: block;
+    font-size: 20px;
+    color: #fff;
+    margin-top: 12px;
+    text-shadow: 0 0 20px rgba(255,255,255,0.4);
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    animation: scorerFade 0.5s ease-out 0.3s both;
+}
+@keyframes goalPulse {
+    0% { transform: scale(0.2); opacity: 0; }
+    60% { transform: scale(1.3); opacity: 1; }
+    80% { transform: scale(0.95); }
+    100% { transform: scale(1); opacity: 1; }
+}
+@keyframes scorerFade {
+    0% { opacity: 0; transform: translateY(10px); }
+    100% { opacity: 1; transform: translateY(0); }
+}
+
+/* ---- POWER-UP NOTIFICATION ---- */
+#powerup-notification {
+    position: fixed;
+    top: 60px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 30;
+    pointer-events: none;
+}
+#powerup-notification .powerup-text {
+    font-size: 16px;
+    font-weight: 700;
+    color: #ffd700;
+    text-shadow: 0 0 10px rgba(255, 215, 0, 0.5);
+    background: rgba(0,0,0,0.7);
+    padding: 6px 16px;
+    border-radius: 12px;
+}
+
+.hidden { display: none !important; }
+
+/* ---- CANVAS ---- */
+#game-canvas {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    z-index: 5;
+}
+
+/* ---- TOUCH CONTROLS ---- */
+#touch-controls {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    height: 200px;
+    z-index: 15;
+    pointer-events: none;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding: 20px;
+}
+
+#joystick-zone {
+    width: 150px;
+    height: 150px;
+    position: relative;
+    pointer-events: auto;
+}
+#joystick-base {
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.08);
+    border: 2px solid rgba(255,255,255,0.15);
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+#joystick-thumb {
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.25);
+    border: 2px solid rgba(255,255,255,0.4);
+    position: absolute;
+    transition: none;
+}
+
+#action-buttons {
+    display: flex;
+    gap: 12px;
+    align-items: flex-end;
+    pointer-events: auto;
+}
+.action-btn {
+    border: none;
+    border-radius: 50%;
+    font-size: 13px;
+    font-weight: 900;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    letter-spacing: 1px;
+}
+.kick-btn {
+    width: 80px;
+    height: 80px;
+    background: radial-gradient(circle, #e94560, #c73750);
+    color: #fff;
+    box-shadow: 0 4px 20px rgba(233, 69, 96, 0.4);
+}
+.kick-btn:active {
+    transform: scale(0.92);
+    box-shadow: 0 2px 10px rgba(233, 69, 96, 0.6);
+}
+.dash-btn {
+    width: 60px;
+    height: 60px;
+    background: radial-gradient(circle, #53d8fb, #3ba8d4);
+    color: #fff;
+    box-shadow: 0 4px 15px rgba(83, 216, 251, 0.3);
+    margin-bottom: 10px;
+}
+.dash-btn:active {
+    transform: scale(0.92);
+}
+
+/* ---- OVERLAYS ---- */
+.overlay {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    background: rgba(0,0,0,0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    backdrop-filter: blur(4px);
+}
+.overlay-content {
+    background: #16213e;
+    padding: 32px;
+    border-radius: 16px;
+    text-align: center;
+    width: 90%;
+    max-width: 320px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.overlay-content h2 {
+    font-size: 28px;
+    color: #53d8fb;
+    margin-bottom: 8px;
+}
+
+#result-score {
+    font-size: 48px;
+    font-weight: 900;
+    margin: 12px 0;
+}
+#match-stats {
+    font-size: 13px;
+    color: #999;
+    line-height: 1.8;
+    margin-bottom: 8px;
+}
+
+/* ---- TOURNAMENT ---- */
+#tournament-bracket {
+    width: 100%;
+    max-width: 360px;
+    padding: 16px 0;
+}
+.bracket-round {
+    margin-bottom: 16px;
+}
+.bracket-round h3 {
+    font-size: 14px;
+    color: #53d8fb;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}
+.bracket-match {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    background: rgba(255,255,255,0.05);
+    border-radius: 8px;
+    margin-bottom: 6px;
+}
+.bracket-team {
+    font-weight: 600;
+}
+.bracket-vs {
+    color: #555;
+    font-size: 12px;
+}
+.bracket-match.current {
+    border: 1px solid #e94560;
+}
+.bracket-match.won {
+    border: 1px solid #4caf50;
+}
+
+/* ---- RESPONSIVE ---- */
+@media (min-width: 768px) {
+    .game-title { font-size: 72px; }
+    #touch-controls { height: 220px; padding: 30px 40px; }
+    .kick-btn { width: 90px; height: 90px; font-size: 14px; }
+    .dash-btn { width: 70px; height: 70px; font-size: 13px; }
+    #joystick-base { width: 140px; height: 140px; }
+    #joystick-thumb { width: 60px; height: 60px; }
+}
+
+@media (max-height: 500px) {
+    #touch-controls { height: 140px; padding: 10px 20px; }
+    .kick-btn { width: 65px; height: 65px; font-size: 11px; }
+    .dash-btn { width: 50px; height: 50px; font-size: 11px; }
+    #joystick-base { width: 100px; height: 100px; }
+    #joystick-thumb { width: 40px; height: 40px; }
+}

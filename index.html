@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>KickZone - Mobile Soccer</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- Main Menu -->
+    <div id="menu-screen" class="screen active">
+        <div class="menu-container">
+            <h1 class="game-title">KICK<span>ZONE</span></h1>
+            <p class="subtitle">Physics-Based Soccer</p>
+            <div class="menu-buttons">
+                <button id="btn-quick-match" class="menu-btn primary">Quick Match</button>
+                <button id="btn-tournament" class="menu-btn">Tournament</button>
+                <button id="btn-practice" class="menu-btn">Practice Mode</button>
+                <button id="btn-settings" class="menu-btn">Settings</button>
+                <button id="btn-how-to-play" class="menu-btn">How to Play</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Match Settings -->
+    <div id="match-settings-screen" class="screen">
+        <div class="settings-container">
+            <h2>Match Settings</h2>
+            <div class="setting-group">
+                <label>Team Size</label>
+                <div class="option-row">
+                    <button class="option-btn" data-team-size="1">1v1</button>
+                    <button class="option-btn active" data-team-size="2">2v2</button>
+                    <button class="option-btn" data-team-size="3">3v3</button>
+                    <button class="option-btn" data-team-size="4">4v4</button>
+                </div>
+            </div>
+            <div class="setting-group">
+                <label>Match Duration</label>
+                <div class="option-row">
+                    <button class="option-btn" data-duration="120">2 min</button>
+                    <button class="option-btn active" data-duration="180">3 min</button>
+                    <button class="option-btn" data-duration="300">5 min</button>
+                </div>
+            </div>
+            <div class="setting-group">
+                <label>Goal Limit</label>
+                <div class="option-row">
+                    <button class="option-btn" data-goals="3">3</button>
+                    <button class="option-btn active" data-goals="5">5</button>
+                    <button class="option-btn" data-goals="0">No Limit</button>
+                </div>
+            </div>
+            <div class="setting-group">
+                <label>AI Difficulty</label>
+                <div class="option-row">
+                    <button class="option-btn" data-difficulty="easy">Easy</button>
+                    <button class="option-btn active" data-difficulty="medium">Medium</button>
+                    <button class="option-btn" data-difficulty="hard">Hard</button>
+                </div>
+            </div>
+            <div class="setting-group">
+                <label>Power-Ups</label>
+                <div class="option-row">
+                    <button class="option-btn active" data-powerups="on">On</button>
+                    <button class="option-btn" data-powerups="off">Off</button>
+                </div>
+            </div>
+            <div class="setting-group">
+                <label>Map</label>
+                <div class="option-row">
+                    <button class="option-btn active" data-map="classic">Classic</button>
+                    <button class="option-btn" data-map="big">Big</button>
+                    <button class="option-btn" data-map="futsal">Futsal</button>
+                </div>
+            </div>
+            <div class="btn-row">
+                <button id="btn-back-menu" class="menu-btn secondary">Back</button>
+                <button id="btn-start-match" class="menu-btn primary">Start Match</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tournament Screen -->
+    <div id="tournament-screen" class="screen">
+        <div class="settings-container">
+            <h2>Tournament</h2>
+            <div id="tournament-bracket"></div>
+            <div class="btn-row">
+                <button id="btn-back-from-tournament" class="menu-btn secondary">Back</button>
+                <button id="btn-start-tournament" class="menu-btn primary">Start Tournament</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- How to Play Screen -->
+    <div id="how-to-play-screen" class="screen">
+        <div class="settings-container">
+            <h2>How to Play</h2>
+            <div class="help-content">
+                <div class="help-item">
+                    <div class="help-icon">&#128377;</div>
+                    <h3>Move</h3>
+                    <p>Use the left joystick to move your player around the field</p>
+                </div>
+                <div class="help-item">
+                    <div class="help-icon">&#9917;</div>
+                    <h3>Kick</h3>
+                    <p>Tap the KICK button to kick the ball. Hold for a power shot!</p>
+                </div>
+                <div class="help-item">
+                    <div class="help-icon">&#9889;</div>
+                    <h3>Dash</h3>
+                    <p>Tap the DASH button for a quick burst of speed</p>
+                </div>
+                <div class="help-item">
+                    <div class="help-icon">&#127873;</div>
+                    <h3>Power-Ups</h3>
+                    <p>Collect power-ups that spawn on the field for special abilities</p>
+                </div>
+                <div class="help-item">
+                    <div class="help-icon">&#127942;</div>
+                    <h3>Win</h3>
+                    <p>Score more goals than your opponent before time runs out!</p>
+                </div>
+            </div>
+            <button id="btn-back-help" class="menu-btn secondary">Back</button>
+        </div>
+    </div>
+
+    <!-- Game Screen -->
+    <div id="game-screen" class="screen">
+        <!-- HUD -->
+        <div id="game-hud">
+            <div id="score-display">
+                <span id="red-score" class="team-score red">0</span>
+                <span id="timer">3:00</span>
+                <span id="blue-score" class="team-score blue">0</span>
+            </div>
+            <button id="btn-pause" class="pause-btn">&#10074;&#10074;</button>
+        </div>
+
+        <!-- Goal notification -->
+        <div id="goal-notification" class="hidden">
+            <span class="goal-text">GOAL!</span>
+            <span class="goal-scorer"></span>
+        </div>
+
+        <!-- Power-up notification -->
+        <div id="powerup-notification" class="hidden">
+            <span class="powerup-text"></span>
+        </div>
+
+        <!-- Canvas -->
+        <canvas id="game-canvas"></canvas>
+
+        <!-- Touch Controls -->
+        <div id="touch-controls">
+            <div id="joystick-zone">
+                <div id="joystick-base">
+                    <div id="joystick-thumb"></div>
+                </div>
+            </div>
+            <div id="action-buttons">
+                <button id="btn-kick" class="action-btn kick-btn">KICK</button>
+                <button id="btn-dash" class="action-btn dash-btn">DASH</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Pause Menu -->
+    <div id="pause-overlay" class="overlay hidden">
+        <div class="overlay-content">
+            <h2>Paused</h2>
+            <button id="btn-resume" class="menu-btn primary">Resume</button>
+            <button id="btn-restart" class="menu-btn">Restart</button>
+            <button id="btn-quit" class="menu-btn secondary">Quit to Menu</button>
+        </div>
+    </div>
+
+    <!-- Match Result -->
+    <div id="result-overlay" class="overlay hidden">
+        <div class="overlay-content">
+            <h2 id="result-title">Match Over</h2>
+            <div id="result-score"></div>
+            <div id="match-stats"></div>
+            <button id="btn-rematch" class="menu-btn primary">Rematch</button>
+            <button id="btn-result-menu" class="menu-btn secondary">Main Menu</button>
+        </div>
+    </div>
+
+    <script src="js/physics.js"></script>
+    <script src="js/entities.js"></script>
+    <script src="js/ai.js"></script>
+    <script src="js/powerups.js"></script>
+    <script src="js/renderer.js"></script>
+    <script src="js/game.js"></script>
+    <script src="js/controls.js"></script>
+    <script src="js/ui.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
