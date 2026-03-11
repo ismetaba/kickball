@@ -6,7 +6,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <title>KickZone - Mobile Soccer</title>
-    <link rel="stylesheet" href="css/style.css?v=6">
+    <link rel="stylesheet" href="css/style.css?v=8">
 </head>
 <body>
     <!-- Main Menu -->
@@ -16,6 +16,7 @@
             <p class="subtitle">Physics-Based Soccer</p>
             <div class="menu-buttons">
                 <button id="btn-quick-match" class="menu-btn primary">Quick Match</button>
+                <button id="btn-online" class="menu-btn primary">Online 1v1</button>
                 <button id="btn-tournament" class="menu-btn">Tournament</button>
                 <button id="btn-practice" class="menu-btn">Practice Mode</button>
                 <button id="btn-settings" class="menu-btn">Settings</button>
@@ -130,6 +131,63 @@
         </div>
     </div>
 
+    <!-- Online Lobby -->
+    <div id="online-lobby-screen" class="screen">
+        <div class="settings-container">
+            <h2>Online 1v1</h2>
+            <div id="lobby-choice">
+                <p class="lobby-subtitle">Play against a friend online</p>
+                <div class="btn-row" style="margin-top: 20px;">
+                    <button id="btn-host-game" class="menu-btn primary">Host Game</button>
+                    <button id="btn-join-game" class="menu-btn primary">Join Game</button>
+                </div>
+            </div>
+            <div id="lobby-host" class="hidden">
+                <p class="lobby-subtitle">Share this code with your friend:</p>
+                <div id="room-code-display" class="room-code">----</div>
+                <div id="host-status" class="lobby-status">Creating room...</div>
+                <div id="host-settings-area">
+                    <div class="setting-group">
+                        <label>Team Size</label>
+                        <div class="option-row">
+                            <button class="option-btn online-opt active" data-online-team-size="1">1v1</button>
+                            <button class="option-btn online-opt" data-online-team-size="2">2v2</button>
+                            <button class="option-btn online-opt" data-online-team-size="3">3v3</button>
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <label>Match Duration</label>
+                        <div class="option-row">
+                            <button class="option-btn online-opt" data-online-duration="120">2 min</button>
+                            <button class="option-btn online-opt active" data-online-duration="180">3 min</button>
+                            <button class="option-btn online-opt" data-online-duration="300">5 min</button>
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <label>Power-Ups</label>
+                        <div class="option-row">
+                            <button class="option-btn online-opt active" data-online-powerups="on">On</button>
+                            <button class="option-btn online-opt" data-online-powerups="off">Off</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div id="lobby-join" class="hidden">
+                <p class="lobby-subtitle">Enter the room code:</p>
+                <input type="text" id="room-code-input" class="room-code-input"
+                       maxlength="4" placeholder="ABCD" autocomplete="off"
+                       spellcheck="false" autocapitalize="characters">
+                <button id="btn-connect" class="menu-btn primary" style="margin-top: 16px;">Connect</button>
+                <div id="join-status" class="lobby-status"></div>
+            </div>
+            <div id="lobby-connected" class="hidden">
+                <div class="lobby-status connected">Opponent connected!</div>
+                <p class="lobby-subtitle">Match starting...</p>
+            </div>
+            <button id="btn-back-lobby" class="menu-btn secondary" style="margin-top: 20px;">Back</button>
+        </div>
+    </div>
+
     <!-- Game Screen -->
     <div id="game-screen" class="screen">
         <!-- HUD -->
@@ -140,6 +198,10 @@
                 <span id="blue-score" class="team-score blue">0</span>
             </div>
             <button id="btn-pause" class="pause-btn">&#10074;&#10074;</button>
+            <div id="online-hud" class="hidden">
+                <span id="online-ping">--ms</span>
+                <span id="online-connection-dot"></span>
+            </div>
             <div id="momentum-bar">
                 <div id="momentum-fill-red" class="momentum-fill red"></div>
                 <div id="momentum-fill-blue" class="momentum-fill blue"></div>
@@ -185,6 +247,15 @@
         </div>
     </div>
 
+    <!-- Disconnect Overlay -->
+    <div id="disconnect-overlay" class="overlay hidden">
+        <div class="overlay-content">
+            <h2>Disconnected</h2>
+            <p style="color:#668;margin-bottom:12px;">Your opponent has left the match.</p>
+            <button id="btn-disconnect-menu" class="menu-btn secondary">Main Menu</button>
+        </div>
+    </div>
+
     <!-- Match Result -->
     <div id="result-overlay" class="overlay hidden">
         <div class="overlay-content">
@@ -196,14 +267,16 @@
         </div>
     </div>
 
-    <script src="js/physics.js?v=6"></script>
-    <script src="js/entities.js?v=6"></script>
-    <script src="js/ai.js?v=6"></script>
-    <script src="js/powerups.js?v=6"></script>
-    <script src="js/renderer.js?v=6"></script>
-    <script src="js/game.js?v=6"></script>
-    <script src="js/controls.js?v=6"></script>
-    <script src="js/ui.js?v=6"></script>
-    <script src="js/main.js?v=6"></script>
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <script src="js/physics.js?v=8"></script>
+    <script src="js/entities.js?v=8"></script>
+    <script src="js/ai.js?v=8"></script>
+    <script src="js/powerups.js?v=8"></script>
+    <script src="js/renderer.js?v=8"></script>
+    <script src="js/game.js?v=8"></script>
+    <script src="js/network.js?v=8"></script>
+    <script src="js/controls.js?v=8"></script>
+    <script src="js/ui.js?v=8"></script>
+    <script src="js/main.js?v=8"></script>
 </body>
 </html>

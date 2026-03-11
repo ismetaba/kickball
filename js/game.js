@@ -34,6 +34,13 @@ class Game {
         this.timeScale = 1.0;
         this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
 
+        // Online multiplayer state
+        this.isOnline = false;
+        this.isHost = false;
+        this.network = null;
+        this.remoteInput = { x: 0, y: 0, dash: false, tackle: false, kickCharging: false, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
+        this.remoteHumanPlayer = null;
+
         // Stats
         this.stats = {
             possession: { red: 0, blue: 0 },
@@ -186,6 +193,94 @@ class Game {
         this.loop();
     }
 
+    startOnlineMatch(settings, network, isHost) {
+        this.network = network;
+        this.isOnline = true;
+        this.isHost = isHost;
+        this.settings = { ...settings };
+
+        this.renderer.resize();
+        this.field = new Field(this.renderer.w, this.renderer.h, this.settings.map || 'classic');
+        this.ball = new Ball(this.field.centerX, this.field.centerY);
+
+        this.players = [];
+        this.aiControllers = [];
+
+        const positions = this.getSpawnPositions();
+        const teamSize = this.settings.teamSize;
+
+        // Red team: first player is human (local for host, remote for guest)
+        for (let i = 0; i < teamSize; i++) {
+            const isRedHuman = (i === 0);
+            const p = new Player(positions.red[i].x, positions.red[i].y, 'red', isRedHuman);
+            this.players.push(p);
+            if (isRedHuman) {
+                if (isHost) this.humanPlayer = p;
+                else this.remoteHumanPlayer = p;
+            } else {
+                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'medium') });
+            }
+        }
+
+        // Blue team: first player is human (remote for host, local for guest)
+        for (let i = 0; i < teamSize; i++) {
+            const isBlueHuman = (i === 0);
+            const p = new Player(positions.blue[i].x, positions.blue[i].y, 'blue', isBlueHuman);
+            this.players.push(p);
+            if (isBlueHuman) {
+                if (isHost) this.remoteHumanPlayer = p;
+                else this.humanPlayer = p;
+            } else {
+                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'medium') });
+            }
+        }
+
+        // Setup network callbacks
+        if (isHost) {
+            network.onRemoteInput = (inputData) => {
+                Object.assign(this.remoteInput, inputData);
+            };
+        } else {
+            network.onStateSnapshot = (snapshot) => {
+                network.deserializeState(snapshot, this);
+            };
+            network.onGoalScored = (data) => {
+                const notif = document.getElementById('goal-notification');
+                notif.querySelector('.goal-text').textContent = 'GOAL!';
+                notif.querySelector('.goal-scorer').textContent = data.team.toUpperCase() + ' Team';
+                notif.classList.remove('hidden');
+                this.isGoalScored = true;
+                this.goalTimer = 2500;
+                this.renderer.triggerShake(1.0);
+                this.renderer.spawnConfetti(data.team);
+            };
+            network.onMatchEnd = (data) => {
+                this.redScore = data.red;
+                this.blueScore = data.blue;
+                this.endMatch();
+            };
+        }
+
+        this.powerUpManager = new PowerUpManager(this.field);
+        this.powerUpManager.enabled = this.settings.powerups !== false;
+
+        this.redScore = 0;
+        this.blueScore = 0;
+        this.timeRemaining = (this.settings.duration || 180) * 1000;
+        this.isRunning = true;
+        this.isPaused = false;
+        this.matchOver = false;
+        this.isGoalScored = false;
+        this.goalTimer = 0;
+        this.practiceMode = false;
+        this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
+        this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
+        this.timeScale = 1.0;
+
+        this.lastTime = performance.now();
+        this.loop();
+    }
+
     loop() {
         if (!this.isRunning) return;
 
@@ -217,6 +312,17 @@ class Game {
     }
 
     update(dt) {
+        // Guest: don't run physics, just send input
+        if (this.isOnline && !this.isHost) {
+            if (this.network) this.network.sendInput(this.input);
+            // Consume one-shot inputs so they don't re-send
+            this.input.kickRelease = false;
+            this.input.dash = false;
+            this.input.tackle = false;
+            this.input.switchPlayer = false;
+            return;
+        }
+
         // Apply time scale for slow-motion effects
         const rawDt = dt;
         dt *= this.timeScale;
@@ -295,6 +401,48 @@ class Game {
             if (this.input.switchPlayer) {
                 this.switchToNearestTeammate();
                 this.input.switchPlayer = false;
+            }
+        }
+
+        // Remote player input (online: host applies guest's input to blue human)
+        if (this.isOnline && this.isHost && this.remoteHumanPlayer &&
+            this.remoteHumanPlayer.powerUp !== 'frozen' && this.remoteHumanPlayer.stunTimer <= 0) {
+
+            this.remoteHumanPlayer.applyInput(this.remoteInput.x, this.remoteInput.y);
+
+            if (this.remoteInput.kickCharging) {
+                this.remoteHumanPlayer.kickChargeRatio = Math.min(this.remoteInput.kickChargeTime / 1000, 1);
+                const slowFactor = 1 - this.remoteHumanPlayer.kickChargeRatio * 0.12;
+                this.remoteHumanPlayer.vx *= slowFactor;
+                this.remoteHumanPlayer.vy *= slowFactor;
+            } else {
+                this.remoteHumanPlayer.kickChargeRatio = 0;
+            }
+
+            if (this.remoteInput.kickRelease) {
+                const chargeRatio = Math.min(this.remoteInput.kickChargeTime / 1000, 1);
+                if (this.remoteHumanPlayer.kick(this.ball, chargeRatio)) {
+                    this.stats.shots.blue++;
+                    this.renderer.triggerShake(0.15 + chargeRatio * 0.85);
+                    this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.3 + chargeRatio * 0.7);
+                    if (this.ball.vx < 0) this.addMomentum('blue');
+                }
+                if (chargeRatio > 0.5) this.hitNearbyPlayers(this.remoteHumanPlayer);
+                this.remoteInput.kickRelease = false;
+                this.remoteInput.kickChargeTime = 0;
+            }
+
+            if (this.remoteInput.tackle) {
+                this.remoteHumanPlayer.tackle(this.ball);
+                this.remoteInput.tackle = false;
+            } else if (this.remoteInput.dash) {
+                this.remoteHumanPlayer.dash();
+                this.remoteInput.dash = false;
+            }
+
+            if (this.remoteInput.switchPlayer) {
+                this.switchToNearestTeammate_remote();
+                this.remoteInput.switchPlayer = false;
             }
         }
 
@@ -479,6 +627,11 @@ class Game {
                 }
             }
         }
+
+        // Online: host sends state to guest
+        if (this.isOnline && this.isHost && this.network) {
+            this.network.sendState(this);
+        }
     }
 
     hitNearbyPlayers(kicker) {
@@ -541,6 +694,11 @@ class Game {
         const netSide = team === 'blue' ? 'left' : 'right';
         this.renderer.triggerNetRipple(netSide, this.ball.y, this.field);
 
+        // Notify guest about goal
+        if (this.isOnline && this.isHost && this.network) {
+            this.network.send({ t: 'goal', d: { team: team } });
+        }
+
         // Check goal limit
         if (this.settings.goalLimit > 0) {
             if (this.redScore >= this.settings.goalLimit || this.blueScore >= this.settings.goalLimit) {
@@ -559,15 +717,25 @@ class Game {
         this.isRunning = false;
         this.matchOver = true;
 
+        // Notify guest about match end
+        if (this.isOnline && this.isHost && this.network) {
+            this.network.send({ t: 'end', d: { red: this.redScore, blue: this.blueScore } });
+        }
+
         const resultOverlay = document.getElementById('result-overlay');
         const title = document.getElementById('result-title');
         const score = document.getElementById('result-score');
         const stats = document.getElementById('match-stats');
 
-        if (this.redScore > this.blueScore) {
+        // Determine local team
+        const localTeam = (this.isOnline && !this.isHost) ? 'blue' : 'red';
+        const localScore = localTeam === 'red' ? this.redScore : this.blueScore;
+        const remoteScore = localTeam === 'red' ? this.blueScore : this.redScore;
+
+        if (localScore > remoteScore) {
             title.textContent = 'YOU WIN!';
             title.style.color = '#4caf50';
-        } else if (this.blueScore > this.redScore) {
+        } else if (remoteScore > localScore) {
             title.textContent = 'YOU LOSE';
             title.style.color = '#e94560';
         } else {
@@ -623,6 +791,29 @@ class Game {
         }
     }
 
+    switchToNearestTeammate_remote() {
+        if (!this.remoteHumanPlayer) return;
+        const teammates = this.players.filter(p =>
+            p.team === this.remoteHumanPlayer.team && p !== this.remoteHumanPlayer && !p.isKeeper
+        );
+        if (teammates.length === 0) return;
+
+        let nearest = null;
+        let nearestDist = Infinity;
+        for (const t of teammates) {
+            const d = Physics.distance(t, this.ball);
+            if (d < nearestDist) { nearestDist = d; nearest = t; }
+        }
+
+        if (nearest) {
+            this.remoteHumanPlayer.isHuman = false;
+            this.aiControllers.push({ player: this.remoteHumanPlayer, ai: new AIController(this.settings.difficulty || 'medium') });
+            nearest.isHuman = true;
+            this.aiControllers = this.aiControllers.filter(c => c.player !== nearest);
+            this.remoteHumanPlayer = nearest;
+        }
+    }
+
     render() {
         this.renderer.clear();
         this.renderer.trackedBall = this.ball;
@@ -653,6 +844,7 @@ class Game {
     }
 
     pause() {
+        if (this.isOnline) return; // No pausing in online matches
         this.isPaused = true;
         document.getElementById('pause-overlay').classList.remove('hidden');
     }
@@ -672,8 +864,16 @@ class Game {
 
     quit() {
         this.isRunning = false;
+        if (this.isOnline && this.network) {
+            this.network.destroy();
+            this.network = null;
+            this.isOnline = false;
+            this.isHost = false;
+        }
         document.getElementById('pause-overlay').classList.add('hidden');
         document.getElementById('result-overlay').classList.add('hidden');
         document.getElementById('goal-notification').classList.add('hidden');
+        document.getElementById('disconnect-overlay').classList.add('hidden');
+        document.getElementById('online-hud').classList.add('hidden');
     }
 }

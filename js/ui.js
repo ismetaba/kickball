@@ -4,11 +4,22 @@ class UI {
         this.game = game;
         this.currentScreen = 'menu';
         this.tournament = null;
+        this.network = null;
+        this.pingUpdateInterval = null;
+        this.onlineSettings = {
+            teamSize: 1,
+            duration: 180,
+            goalLimit: 5,
+            difficulty: 'medium',
+            powerups: true,
+            map: 'classic',
+        };
 
         this.setupMenuEvents();
         this.setupSettingsEvents();
         this.setupGameEvents();
         this.setupTournament();
+        this.setupOnlineEvents();
     }
 
     showScreen(name) {
@@ -87,11 +98,25 @@ class UI {
         });
 
         document.getElementById('btn-quit').addEventListener('click', () => {
+            if (this.game.isOnline) {
+                this.game.quit();
+                this.resetLobby();
+                this.showScreen('menu');
+                return;
+            }
             this.game.quit();
             this.showScreen('menu');
         });
 
         document.getElementById('btn-rematch').addEventListener('click', () => {
+            if (this.game.isOnline) {
+                // No rematch in online — go back to menu
+                this.game.quit();
+                this.resetLobby();
+                document.getElementById('result-overlay').classList.add('hidden');
+                this.showScreen('menu');
+                return;
+            }
             if (this.tournament) {
                 this.advanceTournament();
             } else {
@@ -100,6 +125,13 @@ class UI {
         });
 
         document.getElementById('btn-result-menu').addEventListener('click', () => {
+            if (this.game.isOnline) {
+                this.game.quit();
+                this.resetLobby();
+                document.getElementById('result-overlay').classList.add('hidden');
+                this.showScreen('menu');
+                return;
+            }
             this.game.quit();
             document.getElementById('result-overlay').classList.add('hidden');
             this.showScreen('menu');
@@ -299,5 +331,236 @@ class UI {
             m => m.teamA === 'You' || m.teamB === 'You'
         );
         if (this.tournament.currentMatch === -1) this.tournament.currentMatch = 0;
+    }
+
+    // ---- Online Multiplayer ----
+    setupOnlineEvents() {
+        // Online 1v1 button from main menu
+        document.getElementById('btn-online').addEventListener('click', () => {
+            this.resetLobby();
+            this.showScreen('online-lobby');
+        });
+
+        // Host game button
+        document.getElementById('btn-host-game').addEventListener('click', () => {
+            this.hostOnlineGame();
+        });
+
+        // Join game button
+        document.getElementById('btn-join-game').addEventListener('click', () => {
+            document.getElementById('lobby-choice').classList.add('hidden');
+            document.getElementById('lobby-join').classList.remove('hidden');
+            document.getElementById('room-code-input').focus();
+        });
+
+        // Connect button (join with code)
+        document.getElementById('btn-connect').addEventListener('click', () => {
+            const code = document.getElementById('room-code-input').value.trim().toUpperCase();
+            if (code.length === 4) {
+                this.joinOnlineGame(code);
+            } else {
+                document.getElementById('join-status').textContent = 'Enter a 4-character room code';
+                document.getElementById('join-status').className = 'lobby-status error';
+            }
+        });
+
+        // Room code input — auto-connect on 4 chars + Enter key
+        document.getElementById('room-code-input').addEventListener('keyup', (e) => {
+            if (e.key === 'Enter') {
+                document.getElementById('btn-connect').click();
+            }
+        });
+
+        // Online settings toggles (host lobby)
+        document.querySelectorAll('.online-opt').forEach(btn => {
+            btn.addEventListener('click', () => {
+                // Toggle active in same row
+                const row = btn.closest('.option-row');
+                row.querySelectorAll('.online-opt').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+
+                // Update online settings
+                if (btn.dataset.onlineTeamSize) this.onlineSettings.teamSize = parseInt(btn.dataset.onlineTeamSize);
+                if (btn.dataset.onlineDuration) this.onlineSettings.duration = parseInt(btn.dataset.onlineDuration);
+                if (btn.dataset.onlinePowerups) this.onlineSettings.powerups = btn.dataset.onlinePowerups === 'on';
+            });
+        });
+
+        // Back from lobby
+        document.getElementById('btn-back-lobby').addEventListener('click', () => {
+            if (this.network) {
+                this.network.destroy();
+                this.network = null;
+            }
+            this.resetLobby();
+            this.showScreen('menu');
+        });
+
+        // Disconnect overlay — back to menu
+        document.getElementById('btn-disconnect-menu').addEventListener('click', () => {
+            this.game.quit();
+            this.resetLobby();
+            document.getElementById('disconnect-overlay').classList.add('hidden');
+            this.showScreen('menu');
+        });
+    }
+
+    hostOnlineGame() {
+        // Hide choice, show host panel
+        document.getElementById('lobby-choice').classList.add('hidden');
+        document.getElementById('lobby-host').classList.remove('hidden');
+
+        // Create network manager
+        this.network = new NetworkManager();
+
+        // Status callback
+        this.network.onStatusChange = (status, message) => {
+            const statusEl = document.getElementById('host-status');
+            statusEl.textContent = message;
+            statusEl.className = 'lobby-status';
+            if (status === 'connected') {
+                statusEl.classList.add('connected');
+                // Opponent connected — start match after brief delay
+                document.getElementById('lobby-connected').classList.remove('hidden');
+                document.getElementById('lobby-host').classList.add('hidden');
+                setTimeout(() => {
+                    this.startOnlineMatch(true);
+                }, 1500);
+            } else if (status === 'error') {
+                statusEl.classList.add('error');
+            }
+        };
+
+        // Host and get room code
+        const code = this.network.hostGame();
+        document.getElementById('room-code-display').textContent = code;
+    }
+
+    joinOnlineGame(code) {
+        const statusEl = document.getElementById('join-status');
+        statusEl.textContent = 'Connecting...';
+        statusEl.className = 'lobby-status';
+
+        this.network = new NetworkManager();
+
+        this.network.onStatusChange = (status, message) => {
+            statusEl.textContent = message;
+            statusEl.className = 'lobby-status';
+            if (status === 'connected') {
+                statusEl.classList.add('connected');
+                // Wait for host to send match start signal
+                document.getElementById('lobby-join').classList.add('hidden');
+                document.getElementById('lobby-connected').classList.remove('hidden');
+            } else if (status === 'error') {
+                statusEl.classList.add('error');
+            }
+        };
+
+        // Listen for match start signal from host
+        this.network.onMatchStart = (settings) => {
+            this.onlineSettings = { ...settings };
+            this.startOnlineMatch(false);
+        };
+
+        this.network.joinGame(code);
+    }
+
+    startOnlineMatch(isHost) {
+        // Build match settings
+        const settings = {
+            teamSize: this.onlineSettings.teamSize,
+            duration: this.onlineSettings.duration,
+            goalLimit: this.onlineSettings.goalLimit,
+            difficulty: this.onlineSettings.difficulty,
+            powerups: this.onlineSettings.powerups,
+            map: this.onlineSettings.map || 'classic',
+        };
+
+        // If host, send settings to guest
+        if (isHost) {
+            this.network.sendMatchStart(settings);
+        }
+
+        // Switch to game screen
+        this.showScreen('game');
+        document.getElementById('red-score').textContent = '0';
+        document.getElementById('blue-score').textContent = '0';
+
+        const secs = settings.duration;
+        const m = Math.floor(secs / 60);
+        const s = secs % 60;
+        document.getElementById('timer').textContent = `${m}:${s.toString().padStart(2, '0')}`;
+
+        // Show online HUD
+        document.getElementById('online-hud').classList.remove('hidden');
+
+        // Start the online match in game engine
+        this.game.startOnlineMatch(settings, this.network, isHost);
+
+        // Initialize controls if not yet
+        if (!this.controls) {
+            this.controls = new Controls(this.game);
+        }
+
+        // Setup disconnect handler
+        this.network.onDisconnect = () => {
+            this.stopPingUpdate();
+            document.getElementById('disconnect-overlay').classList.remove('hidden');
+        };
+
+        // Start ping display update
+        this.startPingUpdate();
+    }
+
+    startPingUpdate() {
+        this.pingUpdateInterval = setInterval(() => {
+            if (this.network && this.network.isOnline) {
+                const ping = this.network.latency;
+                const pingEl = document.getElementById('online-ping');
+                pingEl.textContent = ping + 'ms';
+
+                const dot = document.getElementById('online-connection-dot');
+                dot.className = '';
+                if (ping > 200) {
+                    dot.classList.add('disconnected');
+                } else if (ping > 100) {
+                    dot.classList.add('warning');
+                }
+            }
+        }, 1000);
+    }
+
+    stopPingUpdate() {
+        if (this.pingUpdateInterval) {
+            clearInterval(this.pingUpdateInterval);
+            this.pingUpdateInterval = null;
+        }
+    }
+
+    resetLobby() {
+        // Stop ping updates
+        this.stopPingUpdate();
+
+        // Destroy network if still active
+        if (this.network) {
+            this.network.destroy();
+            this.network = null;
+        }
+
+        // Reset lobby UI
+        document.getElementById('lobby-choice').classList.remove('hidden');
+        document.getElementById('lobby-host').classList.add('hidden');
+        document.getElementById('lobby-join').classList.add('hidden');
+        document.getElementById('lobby-connected').classList.add('hidden');
+
+        document.getElementById('room-code-display').textContent = '----';
+        document.getElementById('host-status').textContent = 'Creating room...';
+        document.getElementById('host-status').className = 'lobby-status';
+        document.getElementById('room-code-input').value = '';
+        document.getElementById('join-status').textContent = '';
+        document.getElementById('join-status').className = 'lobby-status';
+
+        // Hide online HUD
+        document.getElementById('online-hud').classList.add('hidden');
     }
 }

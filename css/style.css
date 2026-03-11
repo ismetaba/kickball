@@ -526,6 +526,95 @@ body {
     box-shadow: 0 0 10px rgba(76, 175, 80, 0.2);
 }
 
+/* ---- ONLINE LOBBY ---- */
+.lobby-subtitle {
+    font-size: 14px;
+    color: #6680aa;
+    margin-bottom: 16px;
+    letter-spacing: 1px;
+}
+.room-code {
+    font-size: 48px;
+    font-weight: 900;
+    letter-spacing: 16px;
+    color: #fff;
+    text-shadow: 0 0 20px rgba(77, 212, 255, 0.6), 0 0 40px rgba(77, 212, 255, 0.3);
+    background: rgba(77, 212, 255, 0.08);
+    border: 2px solid rgba(77, 212, 255, 0.3);
+    border-radius: 12px;
+    padding: 16px 32px;
+    margin: 16px 0;
+    text-align: center;
+    font-family: 'Courier New', monospace;
+}
+.room-code-input {
+    font-size: 36px;
+    font-weight: 900;
+    letter-spacing: 12px;
+    color: #fff;
+    text-align: center;
+    background: rgba(10, 15, 40, 0.6);
+    border: 2px solid rgba(77, 212, 255, 0.3);
+    border-radius: 12px;
+    padding: 14px 24px;
+    width: 200px;
+    outline: none;
+    font-family: 'Courier New', monospace;
+    text-transform: uppercase;
+}
+.room-code-input:focus {
+    border-color: #4dd4ff;
+    box-shadow: 0 0 15px rgba(77, 212, 255, 0.3);
+}
+.room-code-input::placeholder {
+    color: #334;
+}
+.lobby-status {
+    font-size: 14px;
+    color: #668;
+    margin-top: 12px;
+    letter-spacing: 1px;
+}
+.lobby-status.connected {
+    color: #4caf50;
+    text-shadow: 0 0 10px rgba(76, 175, 80, 0.4);
+}
+.lobby-status.error {
+    color: #e94560;
+}
+
+/* Online HUD */
+#online-hud {
+    position: fixed;
+    top: 10px;
+    left: 16px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    z-index: 25;
+    pointer-events: none;
+}
+#online-ping {
+    font-size: 11px;
+    color: #6680aa;
+    font-variant-numeric: tabular-nums;
+}
+#online-connection-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #4caf50;
+    box-shadow: 0 0 6px rgba(76, 175, 80, 0.5);
+}
+#online-connection-dot.warning {
+    background: #ffa502;
+    box-shadow: 0 0 6px rgba(255, 165, 2, 0.5);
+}
+#online-connection-dot.disconnected {
+    background: #e94560;
+    box-shadow: 0 0 6px rgba(233, 69, 96, 0.5);
+}
+
 /* ---- RESPONSIVE ---- */
 @media (min-width: 768px) {
     .game-title { font-size: 72px; }
