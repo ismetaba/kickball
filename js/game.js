@@ -346,15 +346,22 @@ class Game {
         if (!this.isRunning) return;
 
         const now = performance.now();
-        const dt = Math.min(now - this.lastTime, 33); // Cap at ~30fps worth of dt
+        const frameDt = Math.min(now - this.lastTime, 50);
         this.lastTime = now;
 
         if (!this.isPaused) {
-            this.update(dt);
+            // Fixed timestep: run physics in consistent 16.67ms steps
+            // so game speed is independent of frame rate
+            this.accumulator = (this.accumulator || 0) + frameDt;
+            const STEP = 16.67;
+            while (this.accumulator >= STEP) {
+                this.update(STEP);
+                this.accumulator -= STEP;
+            }
         }
 
         if (this.isGoalScored) {
-            this.goalTimer -= dt;
+            this.goalTimer -= frameDt;
             if (this.goalTimer <= 0) {
                 this.isGoalScored = false;
                 document.getElementById('goal-notification').classList.add('hidden');
@@ -363,8 +370,8 @@ class Game {
         }
 
         // Always update effects (even during goal pause)
-        this.renderer.updateConfetti(dt);
-        this.renderer.updateNetRipple(dt);
+        this.renderer.updateConfetti(frameDt);
+        this.renderer.updateNetRipple(frameDt);
         this.renderer.updateHitFlashes();
 
         this.render();
