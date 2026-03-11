@@ -144,7 +144,7 @@ class UI {
 
     startLocal1v1() {
         this.game.practiceMode = false;
-        this.game.settings.teamSize = 2;
+        this.game.settings.teamSize = 1;
         this.game.settings.duration = 180;
         this.game.settings.goalLimit = 5;
         this.game.settings.powerups = true;

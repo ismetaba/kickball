@@ -151,9 +151,13 @@ class Controls {
         document.addEventListener('keydown', (e) => {
             keys[e.key] = true;
 
+            // Prevent arrow keys and space from scrolling
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) {
+                e.preventDefault();
+            }
+
             // --- Player 1: WASD + Space ---
             if (e.key === ' ') {
-                e.preventDefault();
                 if (!this.game.input.kickCharging) {
                     this.game.input.kickCharging = true;
                     this.game.input.kickChargeStart = performance.now();
