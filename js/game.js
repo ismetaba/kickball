@@ -31,8 +31,13 @@ class Game {
         this.matchOver = false;
 
         this.input = { x: 0, y: 0, kick: false, dash: false, tackle: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
+        this.input2 = { x: 0, y: 0, kick: false, dash: false, tackle: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
         this.timeScale = 1.0;
         this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
+
+        // Local 1v1
+        this.isLocal1v1 = false;
+        this.humanPlayer2 = null;
 
         // Online multiplayer state
         this.isOnline = false;
@@ -154,6 +159,62 @@ class Game {
         this.matchOver = false;
         this.isGoalScored = false;
         this.goalTimer = 0;
+        this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
+        this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
+        this.timeScale = 1.0;
+
+        this.lastTime = performance.now();
+        this.loop();
+    }
+
+    startLocal1v1() {
+        this.renderer.resize();
+        this.field = new Field(this.renderer.w, this.renderer.h, this.settings.map || 'classic');
+        this.ball = new Ball(this.field.centerX, this.field.centerY);
+
+        this.players = [];
+        this.aiControllers = [];
+        this.isLocal1v1 = true;
+
+        const positions = this.getSpawnPositions();
+        const teamSize = this.settings.teamSize;
+
+        // Red team: P1 is human
+        for (let i = 0; i < teamSize; i++) {
+            const isHuman = (i === 0);
+            const p = new Player(positions.red[i].x, positions.red[i].y, 'red', isHuman);
+            this.players.push(p);
+            if (isHuman) {
+                this.humanPlayer = p;
+            } else {
+                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'medium') });
+            }
+        }
+
+        // Blue team: P2 is human
+        for (let i = 0; i < teamSize; i++) {
+            const isHuman = (i === 0);
+            const p = new Player(positions.blue[i].x, positions.blue[i].y, 'blue', isHuman);
+            this.players.push(p);
+            if (isHuman) {
+                this.humanPlayer2 = p;
+            } else {
+                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'medium') });
+            }
+        }
+
+        this.powerUpManager = new PowerUpManager(this.field);
+        this.powerUpManager.enabled = this.settings.powerups !== false;
+
+        this.redScore = 0;
+        this.blueScore = 0;
+        this.timeRemaining = (this.settings.duration || 180) * 1000;
+        this.isRunning = true;
+        this.isPaused = false;
+        this.matchOver = false;
+        this.isGoalScored = false;
+        this.goalTimer = 0;
+        this.practiceMode = false;
         this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
         this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
         this.timeScale = 1.0;
@@ -473,6 +534,48 @@ class Game {
             if (this.remoteInput.switchPlayer) {
                 this.switchToNearestTeammate_remote();
                 this.remoteInput.switchPlayer = false;
+            }
+        }
+
+        // Local 1v1: Player 2 input (blue team)
+        if (this.isLocal1v1 && this.humanPlayer2 &&
+            this.humanPlayer2.powerUp !== 'frozen' && this.humanPlayer2.stunTimer <= 0) {
+
+            this.humanPlayer2.applyInput(this.input2.x, this.input2.y);
+
+            if (this.input2.kickCharging) {
+                this.humanPlayer2.kickChargeRatio = Math.min((performance.now() - this.input2.kickChargeStart) / 1000, 1);
+                const slowFactor = 1 - this.humanPlayer2.kickChargeRatio * 0.12;
+                this.humanPlayer2.vx *= slowFactor;
+                this.humanPlayer2.vy *= slowFactor;
+            } else {
+                this.humanPlayer2.kickChargeRatio = 0;
+            }
+
+            if (this.input2.kickRelease) {
+                const chargeRatio = Math.min(this.input2.kickChargeTime / 1000, 1);
+                if (this.humanPlayer2.kick(this.ball, chargeRatio)) {
+                    this.stats.shots.blue++;
+                    this.renderer.triggerShake(0.15 + chargeRatio * 0.85);
+                    this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.3 + chargeRatio * 0.7);
+                    if (this.ball.vx < 0) this.addMomentum('blue');
+                }
+                if (chargeRatio > 0.5) this.hitNearbyPlayers(this.humanPlayer2);
+                this.input2.kickRelease = false;
+                this.input2.kickChargeTime = 0;
+            }
+
+            if (this.input2.tackle) {
+                this.humanPlayer2.tackle(this.ball);
+                this.input2.tackle = false;
+            } else if (this.input2.dash) {
+                this.humanPlayer2.dash();
+                this.input2.dash = false;
+            }
+
+            if (this.input2.switchPlayer) {
+                this.switchToNearestTeammate_p2();
+                this.input2.switchPlayer = false;
             }
         }
 
@@ -844,6 +947,29 @@ class Game {
         }
     }
 
+    switchToNearestTeammate_p2() {
+        if (!this.humanPlayer2) return;
+        const teammates = this.players.filter(p =>
+            p.team === this.humanPlayer2.team && p !== this.humanPlayer2 && !p.isKeeper
+        );
+        if (teammates.length === 0) return;
+
+        let nearest = null;
+        let nearestDist = Infinity;
+        for (const t of teammates) {
+            const d = Physics.distance(t, this.ball);
+            if (d < nearestDist) { nearestDist = d; nearest = t; }
+        }
+
+        if (nearest) {
+            this.humanPlayer2.isHuman = false;
+            this.aiControllers.push({ player: this.humanPlayer2, ai: new AIController(this.settings.difficulty || 'medium') });
+            nearest.isHuman = true;
+            this.aiControllers = this.aiControllers.filter(c => c.player !== nearest);
+            this.humanPlayer2 = nearest;
+        }
+    }
+
     render() {
         this.renderer.clear();
         this.renderer.trackedBall = this.ball;
@@ -854,8 +980,9 @@ class Game {
 
         // Players
         for (const p of this.players) {
-            this.renderer.drawPlayer(p, p === this.humanPlayer);
-            if (p === this.humanPlayer) {
+            const isControlled = (p === this.humanPlayer) || (p === this.humanPlayer2);
+            this.renderer.drawPlayer(p, isControlled);
+            if (isControlled) {
                 this.renderer.drawDashCooldown(p);
             }
         }
@@ -894,6 +1021,8 @@ class Game {
 
     quit() {
         this.isRunning = false;
+        this.isLocal1v1 = false;
+        this.humanPlayer2 = null;
         if (this.isOnline && this.network) {
             this.network.destroy();
             this.network = null;

@@ -38,6 +38,10 @@ class UI {
             this.showScreen('tournament');
         });
 
+        document.getElementById('btn-local-1v1').addEventListener('click', () => {
+            this.startLocal1v1();
+        });
+
         document.getElementById('btn-practice').addEventListener('click', () => {
             this.startPractice();
         });
@@ -136,6 +140,26 @@ class UI {
             document.getElementById('result-overlay').classList.add('hidden');
             this.showScreen('menu');
         });
+    }
+
+    startLocal1v1() {
+        this.game.practiceMode = false;
+        this.game.settings.teamSize = 2;
+        this.game.settings.duration = 180;
+        this.game.settings.goalLimit = 5;
+        this.game.settings.powerups = true;
+        this.game.settings.map = 'classic';
+
+        this.showScreen('game');
+        document.getElementById('red-score').textContent = '0';
+        document.getElementById('blue-score').textContent = '0';
+        document.getElementById('timer').textContent = '3:00';
+
+        this.game.startLocal1v1();
+
+        if (!this.controls) {
+            this.controls = new Controls(this.game);
+        }
     }
 
     startPractice() {

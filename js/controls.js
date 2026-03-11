@@ -146,20 +146,22 @@ class Controls {
 
     setupKeyboard() {
         const keys = {};
+        this.lastDashKeyTapTime2 = 0;
 
         document.addEventListener('keydown', (e) => {
             keys[e.key] = true;
 
-            if (e.key === ' ' || e.key === 'x' || e.key === 'X') {
+            // --- Player 1: WASD + Space ---
+            if (e.key === ' ') {
+                e.preventDefault();
                 if (!this.game.input.kickCharging) {
                     this.game.input.kickCharging = true;
                     this.game.input.kickChargeStart = performance.now();
                 }
             }
-            if (e.key === 'Shift' || e.key === 'z' || e.key === 'Z') {
+            if (e.key === 'Shift') {
                 const now = performance.now();
                 if (now - this.lastDashKeyTapTime < 300) {
-                    // Double-tap: tackle
                     this.game.input.tackle = true;
                     this.game.input.dash = false;
                 } else {
@@ -167,10 +169,31 @@ class Controls {
                 }
                 this.lastDashKeyTapTime = now;
             }
-            if (e.key === 'Tab' || e.key === 'c' || e.key === 'C') {
-                e.preventDefault();
+            if (e.key === 'q' || e.key === 'Q') {
                 this.game.input.switchPlayer = true;
             }
+
+            // --- Player 2: Arrow Keys + Enter/Numpad ---
+            if (e.key === 'Enter') {
+                if (!this.game.input2.kickCharging) {
+                    this.game.input2.kickCharging = true;
+                    this.game.input2.kickChargeStart = performance.now();
+                }
+            }
+            if (e.key === '/' || e.key === 'NumpadDecimal') {
+                const now = performance.now();
+                if (now - this.lastDashKeyTapTime2 < 300) {
+                    this.game.input2.tackle = true;
+                    this.game.input2.dash = false;
+                } else {
+                    this.game.input2.dash = true;
+                }
+                this.lastDashKeyTapTime2 = now;
+            }
+            if (e.key === '.' || e.key === 'Numpad0') {
+                this.game.input2.switchPlayer = true;
+            }
+
             if (e.key === 'Escape') {
                 if (this.game.isRunning && !this.game.matchOver) {
                     if (this.game.isPaused) this.game.resume();
@@ -182,7 +205,8 @@ class Controls {
         document.addEventListener('keyup', (e) => {
             keys[e.key] = false;
 
-            if (e.key === ' ' || e.key === 'x' || e.key === 'X') {
+            // P1 kick release
+            if (e.key === ' ') {
                 if (this.game.input.kickCharging) {
                     const holdTime = performance.now() - this.game.input.kickChargeStart;
                     this.game.input.kickChargeTime = Math.min(holdTime, 1000);
@@ -190,17 +214,26 @@ class Controls {
                     this.game.input.kickRelease = true;
                 }
             }
+            // P2 kick release
+            if (e.key === 'Enter') {
+                if (this.game.input2.kickCharging) {
+                    const holdTime = performance.now() - this.game.input2.kickChargeStart;
+                    this.game.input2.kickChargeTime = Math.min(holdTime, 1000);
+                    this.game.input2.kickCharging = false;
+                    this.game.input2.kickRelease = true;
+                }
+            }
         });
 
         // Keyboard movement polling
         const pollKeyboard = () => {
+            // P1: WASD
             let kx = 0, ky = 0;
-            if (keys['ArrowLeft'] || keys['a'] || keys['A']) kx -= 1;
-            if (keys['ArrowRight'] || keys['d'] || keys['D']) kx += 1;
-            if (keys['ArrowUp'] || keys['w'] || keys['W']) ky -= 1;
-            if (keys['ArrowDown'] || keys['s'] || keys['S']) ky += 1;
+            if (keys['a'] || keys['A']) kx -= 1;
+            if (keys['d'] || keys['D']) kx += 1;
+            if (keys['w'] || keys['W']) ky -= 1;
+            if (keys['s'] || keys['S']) ky += 1;
 
-            // Only override if keyboard is being used
             if (kx !== 0 || ky !== 0) {
                 const len = Math.sqrt(kx * kx + ky * ky);
                 this.game.input.x = kx / len;
@@ -208,6 +241,22 @@ class Controls {
             } else if (!this.joystickActive) {
                 this.game.input.x = 0;
                 this.game.input.y = 0;
+            }
+
+            // P2: Arrow keys
+            let kx2 = 0, ky2 = 0;
+            if (keys['ArrowLeft']) kx2 -= 1;
+            if (keys['ArrowRight']) kx2 += 1;
+            if (keys['ArrowUp']) ky2 -= 1;
+            if (keys['ArrowDown']) ky2 += 1;
+
+            if (kx2 !== 0 || ky2 !== 0) {
+                const len = Math.sqrt(kx2 * kx2 + ky2 * ky2);
+                this.game.input2.x = kx2 / len;
+                this.game.input2.y = ky2 / len;
+            } else {
+                this.game.input2.x = 0;
+                this.game.input2.y = 0;
             }
 
             requestAnimationFrame(pollKeyboard);
