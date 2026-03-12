@@ -1,6 +1,7 @@
 // Physics engine for circle-based 2D soccer
 const Physics = {
     dtRatio: 1, // Frame-rate independent scale factor (dt / 16.67)
+    GAME_SPEED: 1.2, // Global game speed multiplier
     FRICTION: 0.92,
     BALL_FRICTION: 0.992,
     WALL_BOUNCE: 0.7,

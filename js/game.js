@@ -375,7 +375,7 @@ class Game {
     update(dt) {
         // Guest: run local prediction for own player, send input to host
         if (this.isOnline && !this.isHost) {
-            Physics.dtRatio = dt / 16.67;
+            Physics.dtRatio = (dt / 16.67) * Physics.GAME_SPEED;
             const sent = this.network ? this.network.sendInput(this.input) : false;
 
             // Local prediction: apply own input immediately for responsiveness
@@ -419,7 +419,7 @@ class Game {
         // Apply time scale for slow-motion effects
         const rawDt = dt;
         dt *= this.timeScale;
-        Physics.dtRatio = dt / 16.67;
+        Physics.dtRatio = (dt / 16.67) * Physics.GAME_SPEED;
 
         // Timer (skip in practice mode) - use raw dt so timer isn't affected by slow-mo
         if (!this.practiceMode) {
