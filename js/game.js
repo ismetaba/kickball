@@ -145,9 +145,9 @@ class Game {
             if (isHuman) {
                 this.humanPlayer = p;
             } else {
-                const redAi = this.settings.difficulty === 'learned' && typeof Trainer !== 'undefined' && Trainer.hasTrainedAgent()
+                const redAi = this.settings.difficulty === 'expert' && typeof Trainer !== 'undefined' && Trainer.hasTrainedAgent()
                     ? Trainer.getBestAgent()
-                    : new AIController(this.settings.difficulty === 'learned' ? 'hard' : this.settings.difficulty);
+                    : new AIController(this.settings.difficulty === 'expert' ? 'normal' : this.settings.difficulty);
                 this.aiControllers.push({ player: p, ai: redAi });
             }
         }
@@ -156,9 +156,9 @@ class Game {
         for (let i = 0; i < this.settings.teamSize; i++) {
             const p = new Player(positions.blue[i].x, positions.blue[i].y, 'blue', false);
             this.players.push(p);
-            const ai = this.settings.difficulty === 'learned' && typeof Trainer !== 'undefined' && Trainer.hasTrainedAgent()
+            const ai = this.settings.difficulty === 'expert' && typeof Trainer !== 'undefined' && Trainer.hasTrainedAgent()
                 ? Trainer.getBestAgent()
-                : new AIController(this.settings.difficulty === 'learned' ? 'hard' : this.settings.difficulty);
+                : new AIController(this.settings.difficulty === 'expert' ? 'normal' : this.settings.difficulty);
             this.aiControllers.push({ player: p, ai });
         }
 

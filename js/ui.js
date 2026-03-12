@@ -153,7 +153,7 @@ class UI {
         document.getElementById('btn-train-test').addEventListener('click', () => {
             // Start a quick match with the learned AI
             this.game.settings.teamSize = 2;
-            this.game.settings.difficulty = 'learned';
+            this.game.settings.difficulty = 'expert';
             this.game.settings.duration = 120;
             this.game.settings.goalLimit = 5;
             this.game.settings.powerups = false;

@@ -23,7 +23,7 @@ class AIController {
                 this.aimThreshold = -0.3;  // cos angle: very loose aim
                 this.moveDiv = 30;
                 break;
-            case 'hard':
+            case 'normal':
                 this.reactionTime = 40;     // Lightning-fast decisions
                 this.reactionJitter = 30;   // Minimal variance
                 this.accuracy = 1.0;        // Perfect accuracy
