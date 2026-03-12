@@ -108,6 +108,48 @@ class UI {
             document.getElementById('btn-train-test').disabled = true;
         });
 
+        // Export model as JSON download
+        document.getElementById('btn-train-export').addEventListener('click', () => {
+            const data = localStorage.getItem('kickzone-learned-ai');
+            if (!data) {
+                document.getElementById('train-status').textContent = 'No model to export';
+                return;
+            }
+            const blob = new Blob([data], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'kickzone-model.json';
+            a.click();
+            URL.revokeObjectURL(a.href);
+            document.getElementById('train-status').textContent = 'Model downloaded!';
+        });
+
+        // Import model from JSON file
+        document.getElementById('btn-train-import').addEventListener('click', () => {
+            document.getElementById('train-import-file').click();
+        });
+        document.getElementById('train-import-file').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                try {
+                    const obj = JSON.parse(ev.target.result);
+                    if (!obj.weights) throw new Error('Invalid model');
+                    localStorage.setItem('kickzone-learned-ai', JSON.stringify(obj));
+                    Trainer.generation = obj.generation || 0;
+                    Trainer.bestFitness = obj.bestFitness || 0;
+                    this.updateTrainUI(Trainer.generation, Trainer.bestFitness);
+                    document.getElementById('train-status').textContent = 'Model loaded!';
+                    document.getElementById('btn-train-test').disabled = false;
+                } catch (err) {
+                    document.getElementById('train-status').textContent = 'Invalid file';
+                }
+            };
+            reader.readAsText(file);
+            e.target.value = '';
+        });
+
         document.getElementById('btn-train-test').addEventListener('click', () => {
             // Start a quick match with the learned AI
             this.game.settings.teamSize = 2;
