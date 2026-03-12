@@ -20,6 +20,22 @@ class UI {
         this.setupGameEvents();
         this.setupTournament();
         this.setupOnlineEvents();
+
+        // Initialize audio on first user interaction (required by mobile browsers)
+        const initAudio = () => {
+            Sound.init();
+            Sound.unlock();
+            document.removeEventListener('touchstart', initAudio);
+            document.removeEventListener('click', initAudio);
+        };
+        document.addEventListener('touchstart', initAudio, { once: true });
+        document.addEventListener('click', initAudio, { once: true });
+
+        // UI click sounds for all buttons
+        document.addEventListener('click', (e) => {
+            const btn = e.target.closest('button, .option-btn, .menu-btn');
+            if (btn) Sound.uiClick();
+        });
     }
 
     showScreen(name) {
@@ -78,11 +94,29 @@ class UI {
             });
         });
 
+        // Volume controls
+        const volSlider = document.getElementById('volume-slider');
+        const muteBtn = document.getElementById('btn-mute');
+        volSlider.value = Sound.volume * 100;
+        muteBtn.textContent = Sound.muted ? '🔇' : '🔊';
+        volSlider.addEventListener('input', () => {
+            Sound.init();
+            Sound.setVolume(volSlider.value / 100);
+            if (Sound.muted) { Sound.toggleMute(); muteBtn.textContent = '🔊'; }
+        });
+        muteBtn.addEventListener('click', (e) => {
+            e.stopPropagation(); // don't trigger uiClick twice
+            Sound.init();
+            const muted = Sound.toggleMute();
+            muteBtn.textContent = muted ? '🔇' : '🔊';
+        });
+
         document.getElementById('btn-back-menu').addEventListener('click', () => {
             this.showScreen('menu');
         });
 
         document.getElementById('btn-start-match').addEventListener('click', () => {
+            Sound.uiStart();
             this.startGame();
         });
     }

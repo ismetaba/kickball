@@ -230,16 +230,52 @@ body {
     font-variant-numeric: tabular-nums;
 }
 #momentum-bar {
-    position: fixed;
-    top: 48px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 200px;
-    height: 6px;
+    display: none;
+}
+
+/* Volume control */
+.sound-control {
     display: flex;
-    gap: 4px;
-    z-index: 20;
-    pointer-events: none;
+    align-items: center;
+    gap: 10px;
+}
+.mute-btn {
+    background: rgba(5, 8, 25, 0.6);
+    border: 1px solid rgba(77, 212, 255, 0.3);
+    color: #fff;
+    font-size: 20px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    min-width: 44px;
+    text-align: center;
+}
+.mute-btn:active { opacity: 0.7; }
+.volume-slider {
+    flex: 1;
+    height: 6px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: rgba(77, 212, 255, 0.15);
+    border-radius: 3px;
+    outline: none;
+}
+.volume-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #53d8fb;
+    cursor: pointer;
+    border: 2px solid rgba(5, 8, 25, 0.8);
+}
+.volume-slider::-moz-range-thumb {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #53d8fb;
+    cursor: pointer;
+    border: 2px solid rgba(5, 8, 25, 0.8);
 }
 .momentum-fill {
     height: 100%;

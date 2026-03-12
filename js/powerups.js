@@ -60,6 +60,7 @@ class PowerUpManager {
             bobTimer: 0,
             scale: 1,
         });
+        Sound.powerUpSpawn();
     }
 
     applyPowerUp(player, pu, allPlayers) {

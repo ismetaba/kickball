@@ -174,6 +174,7 @@ const Physics = {
         const goalTop = field.goalY;
         const goalBottom = field.goalY + field.goalHeight;
         const goalDepth = field.goalDepth || 20;
+        let bounced = false;
 
         if (isPlayer) {
             const cw = field.canvasWidth;
@@ -195,19 +196,19 @@ const Physics = {
                 if (entity.y > goalTop && entity.y < goalBottom) {
                     if (entity.x - r < field.x - goalDepth) {
                         entity.x = field.x - goalDepth + r;
-                        entity.vx *= -this.WALL_BOUNCE;
+                        entity.vx *= -this.WALL_BOUNCE; bounced = true;
                     }
                     if (entity.y - r < goalTop) {
                         entity.y = goalTop + r;
-                        entity.vy *= -this.WALL_BOUNCE;
+                        entity.vy *= -this.WALL_BOUNCE; bounced = true;
                     }
                     if (entity.y + r > goalBottom) {
                         entity.y = goalBottom - r;
-                        entity.vy *= -this.WALL_BOUNCE;
+                        entity.vy *= -this.WALL_BOUNCE; bounced = true;
                     }
                 } else {
                     entity.x = field.x + r;
-                    entity.vx *= -this.WALL_BOUNCE;
+                    entity.vx *= -this.WALL_BOUNCE; bounced = true;
                 }
             }
             // Right goal
@@ -215,32 +216,33 @@ const Physics = {
                 if (entity.y > goalTop && entity.y < goalBottom) {
                     if (entity.x + r > field.x + field.width + goalDepth) {
                         entity.x = field.x + field.width + goalDepth - r;
-                        entity.vx *= -this.WALL_BOUNCE;
+                        entity.vx *= -this.WALL_BOUNCE; bounced = true;
                     }
                     if (entity.y - r < goalTop) {
                         entity.y = goalTop + r;
-                        entity.vy *= -this.WALL_BOUNCE;
+                        entity.vy *= -this.WALL_BOUNCE; bounced = true;
                     }
                     if (entity.y + r > goalBottom) {
                         entity.y = goalBottom - r;
-                        entity.vy *= -this.WALL_BOUNCE;
+                        entity.vy *= -this.WALL_BOUNCE; bounced = true;
                     }
                 } else {
                     entity.x = field.x + field.width - r;
-                    entity.vx *= -this.WALL_BOUNCE;
+                    entity.vx *= -this.WALL_BOUNCE; bounced = true;
                 }
             }
 
             // Ball Y walls
             if (entity.y - r < field.y) {
                 entity.y = field.y + r;
-                entity.vy *= -this.WALL_BOUNCE;
+                entity.vy *= -this.WALL_BOUNCE; bounced = true;
             }
             if (entity.y + r > field.y + field.height) {
                 entity.y = field.y + field.height - r;
-                entity.vy *= -this.WALL_BOUNCE;
+                entity.vy *= -this.WALL_BOUNCE; bounced = true;
             }
         }
+        return bounced;
     },
 
     checkGoal(ball, field) {
