@@ -640,6 +640,10 @@ class EvolutionTrainer {
 
         this.initPopulation();
         this.loadFromStorage();
+        // If no local model, try loading the bundled model from file
+        if (!this.bestAgent) {
+            this.loadFromFile();
+        }
     }
 
     _initWorkers() {
@@ -1041,6 +1045,46 @@ class EvolutionTrainer {
                 this.population.push(agent);
             }
 
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    async loadFromFile() {
+        try {
+            const res = await fetch('models/kickzone-model.json');
+            if (!res.ok) return false;
+            const data = await res.json();
+            if (!data.weights || !data.layers) return false;
+
+            const expectedLayers = new LearningAI().nn.layers;
+            if (JSON.stringify(data.layers) !== JSON.stringify(expectedLayers)) {
+                console.log('Bundled model has different architecture, skipping.');
+                return false;
+            }
+
+            this.generation = data.generation || 0;
+            this.bestFitness = data.bestFitness || 0;
+            this._lastBestFitness = this.bestFitness;
+            this._stagnationCounter = 0;
+
+            const nn = new NeuralNetwork(data.layers);
+            nn.deserialize(data.weights);
+            this.bestAgent = new LearningAI(nn);
+
+            // Seed population with best agent + mutations
+            this.population = [];
+            this.population.push(this.bestAgent.clone());
+            for (let i = 1; i < this.populationSize; i++) {
+                const agent = this.bestAgent.clone();
+                this.mutate(agent, 0.15);
+                this.population.push(agent);
+            }
+
+            // Also save to localStorage for future loads
+            this.saveToStorage();
+            console.log('Loaded bundled model (gen ' + this.generation + ', fitness ' + this.bestFitness.toFixed(1) + ')');
             return true;
         } catch (e) {
             return false;
