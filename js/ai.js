@@ -1,6 +1,6 @@
 // AI controller for computer-controlled players
 class AIController {
-    constructor(difficulty = 'medium') {
+    constructor(difficulty = 'normal') {
         this.setDifficulty(difficulty);
         this.targetX = 0;
         this.targetY = 0;
@@ -11,40 +11,16 @@ class AIController {
     }
 
     setDifficulty(difficulty) {
-        switch (difficulty) {
-            case 'easy':
-                this.reactionTime = 400;
-                this.reactionJitter = 200;
-                this.accuracy = 0.5;
-                this.aggressiveness = 0.3;
-                this.kickRange = 0.7;
-                this.positioningSkill = 0.4;
-                this.interceptFrames = 3;
-                this.aimThreshold = -0.3;  // cos angle: very loose aim
-                this.moveDiv = 30;
-                break;
-            case 'normal':
-                this.reactionTime = 40;     // Lightning-fast decisions
-                this.reactionJitter = 30;   // Minimal variance
-                this.accuracy = 1.0;        // Perfect accuracy
-                this.aggressiveness = 0.92; // Very aggressive
-                this.kickRange = 1.0;       // Full kick range
-                this.positioningSkill = 1.0; // Perfect positioning
-                this.interceptFrames = 12;  // Predict ball far ahead
-                this.aimThreshold = 0.35;   // Only shoot when well-aimed (~70°)
-                this.moveDiv = 16;          // Faster movement to target
-                break;
-            default: // medium
-                this.reactionTime = 200;
-                this.reactionJitter = 150;
-                this.accuracy = 0.75;
-                this.aggressiveness = 0.55;
-                this.kickRange = 0.85;
-                this.positioningSkill = 0.65;
-                this.interceptFrames = 5;
-                this.aimThreshold = 0.1;
-                this.moveDiv = 25;
-        }
+        // Normal is the only rule-based difficulty
+        this.reactionTime = 40;
+        this.reactionJitter = 30;
+        this.accuracy = 1.0;
+        this.aggressiveness = 0.92;
+        this.kickRange = 1.0;
+        this.positioningSkill = 1.0;
+        this.interceptFrames = 12;
+        this.aimThreshold = 0.35;
+        this.moveDiv = 16;
     }
 
     // Predict ball position using physics-accurate friction decay

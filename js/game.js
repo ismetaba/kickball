@@ -8,7 +8,7 @@ class Game {
             teamSize: 2,
             duration: 180,
             goalLimit: 5,
-            difficulty: 'medium',
+            difficulty: 'normal',
             powerups: true,
             map: 'classic',
         };
