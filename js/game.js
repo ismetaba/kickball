@@ -346,26 +346,15 @@ class Game {
         if (!this.isRunning) return;
 
         const now = performance.now();
-        const frameDt = Math.min(now - this.lastTime, 200);
+        const dt = Math.min(now - this.lastTime, 100);
         this.lastTime = now;
 
         if (!this.isPaused) {
-            // Fixed timestep: run physics in consistent 16.67ms steps
-            // so game speed is independent of frame rate
-            this.accumulator = (this.accumulator || 0) + frameDt;
-            const STEP = 16.67;
-            let steps = 0;
-            while (this.accumulator >= STEP && steps < 12) {
-                this.update(STEP);
-                this.accumulator -= STEP;
-                steps++;
-            }
-            // Prevent spiral of death: discard remaining if we maxed out steps
-            if (steps >= 12) this.accumulator = 0;
+            this.update(dt);
         }
 
         if (this.isGoalScored) {
-            this.goalTimer -= frameDt;
+            this.goalTimer -= dt;
             if (this.goalTimer <= 0) {
                 this.isGoalScored = false;
                 document.getElementById('goal-notification').classList.add('hidden');
@@ -374,8 +363,8 @@ class Game {
         }
 
         // Always update effects (even during goal pause)
-        this.renderer.updateConfetti(frameDt);
-        this.renderer.updateNetRipple(frameDt);
+        this.renderer.updateConfetti(dt);
+        this.renderer.updateNetRipple(dt);
         this.renderer.updateHitFlashes();
 
         this.render();
@@ -386,6 +375,7 @@ class Game {
     update(dt) {
         // Guest: run local prediction for own player, send input to host
         if (this.isOnline && !this.isHost) {
+            Physics.dtRatio = dt / 16.67;
             const sent = this.network ? this.network.sendInput(this.input) : false;
 
             // Local prediction: apply own input immediately for responsiveness
@@ -403,11 +393,12 @@ class Game {
                 if (this.input.tackle) hp.tackle(this.ball);
                 if (this.input.switchPlayer) this.switchToNearestTeammate();
 
-                // Move own player locally
-                hp.vx *= Math.pow(0.92, dt / 16.67);
-                hp.vy *= Math.pow(0.92, dt / 16.67);
-                hp.x += hp.vx * dt / 16.67;
-                hp.y += hp.vy * dt / 16.67;
+                // Move own player locally (dt-scaled)
+                const s = Physics.dtRatio;
+                hp.vx *= Math.pow(0.92, s);
+                hp.vy *= Math.pow(0.92, s);
+                hp.x += hp.vx * s;
+                hp.y += hp.vy * s;
 
                 // Keep in bounds
                 const f = this.field;
@@ -428,6 +419,7 @@ class Game {
         // Apply time scale for slow-motion effects
         const rawDt = dt;
         dt *= this.timeScale;
+        Physics.dtRatio = dt / 16.67;
 
         // Timer (skip in practice mode) - use raw dt so timer isn't affected by slow-mo
         if (!this.practiceMode) {
@@ -467,9 +459,9 @@ class Game {
             if (this.input.kickCharging) {
                 this.humanPlayer.kickChargeRatio = Math.min((performance.now() - this.input.kickChargeStart) / 1000, 1);
                 // Slow player down while holding kick (more charge = slower)
-                const slowFactor = 1 - this.humanPlayer.kickChargeRatio * 0.12; // up to 12% slower at full charge
-                this.humanPlayer.vx *= slowFactor;
-                this.humanPlayer.vy *= slowFactor;
+                const slowFactor = 1 - this.humanPlayer.kickChargeRatio * 0.12;
+                this.humanPlayer.vx *= Math.pow(slowFactor, Physics.dtRatio);
+                this.humanPlayer.vy *= Math.pow(slowFactor, Physics.dtRatio);
             } else {
                 this.humanPlayer.kickChargeRatio = 0;
             }
@@ -515,8 +507,8 @@ class Game {
             if (this.remoteInput.kickCharging) {
                 this.remoteHumanPlayer.kickChargeRatio = Math.min(this.remoteInput.kickChargeTime / 1000, 1);
                 const slowFactor = 1 - this.remoteHumanPlayer.kickChargeRatio * 0.12;
-                this.remoteHumanPlayer.vx *= slowFactor;
-                this.remoteHumanPlayer.vy *= slowFactor;
+                this.remoteHumanPlayer.vx *= Math.pow(slowFactor, Physics.dtRatio);
+                this.remoteHumanPlayer.vy *= Math.pow(slowFactor, Physics.dtRatio);
             } else {
                 this.remoteHumanPlayer.kickChargeRatio = 0;
             }
@@ -557,8 +549,8 @@ class Game {
             if (this.input2.kickCharging) {
                 this.humanPlayer2.kickChargeRatio = Math.min((performance.now() - this.input2.kickChargeStart) / 1000, 1);
                 const slowFactor = 1 - this.humanPlayer2.kickChargeRatio * 0.12;
-                this.humanPlayer2.vx *= slowFactor;
-                this.humanPlayer2.vy *= slowFactor;
+                this.humanPlayer2.vx *= Math.pow(slowFactor, Physics.dtRatio);
+                this.humanPlayer2.vy *= Math.pow(slowFactor, Physics.dtRatio);
             } else {
                 this.humanPlayer2.kickChargeRatio = 0;
             }
@@ -633,8 +625,8 @@ class Game {
                 const toGoalY = goalY - this.ball.y;
                 const toGoalN = Physics.normalize(toGoalX, toGoalY);
 
-                // Gently steer toward goal
-                const steerForce = 0.12;
+                // Gently steer toward goal (dt-scaled)
+                const steerForce = 0.12 * Physics.dtRatio;
                 this.ball.vx += toGoalN.x * steerForce;
                 this.ball.vy += toGoalN.y * steerForce;
 
@@ -654,8 +646,8 @@ class Game {
                     const dx = p.x - this.ball.x;
                     const dy = p.y - this.ball.y;
                     const n = Physics.normalize(dx, dy);
-                    this.ball.vx += n.x * 0.35;
-                    this.ball.vy += n.y * 0.35;
+                    this.ball.vx += n.x * 0.35 * Physics.dtRatio;
+                    this.ball.vy += n.y * 0.35 * Physics.dtRatio;
                 }
             }
         }
@@ -786,10 +778,11 @@ class Game {
                 const nearLeftGoal = this.ball.x < this.field.x + 40 && this.ball.vx < -3;
                 const nearRightGoal = this.ball.x > this.field.x + this.field.width - 40 && this.ball.vx > 3;
 
+                const rawS = rawDt / 16.67;
                 if (ballInGoalY && ballSpeed > 6 && (nearLeftGoal || nearRightGoal)) {
-                    this.timeScale = Math.max(0.4, this.timeScale * 0.95);
+                    this.timeScale = Math.max(0.4, this.timeScale * Math.pow(0.95, rawS));
                 } else {
-                    this.timeScale = Math.min(1.0, this.timeScale + 0.05);
+                    this.timeScale = Math.min(1.0, this.timeScale + 0.05 * rawS);
                 }
             }
         }

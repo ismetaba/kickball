@@ -272,8 +272,8 @@ class GoalkeeperAI {
 
         const ballSpeed = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
 
-        // Smooth tracking of ball Y (with reflex speed)
-        const trackingSpeed = this.reflexSpeed;
+        // Smooth tracking of ball Y (with reflex speed, dt-scaled)
+        const trackingSpeed = this.reflexSpeed * Physics.dtRatio;
         this.smoothY += (ball.y - this.smoothY) * trackingSpeed;
 
         // Goalkeeper mistake: occasionally misjudge position

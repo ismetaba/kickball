@@ -50,15 +50,16 @@ class Player {
     }
 
     update(dt) {
+        const s = Physics.dtRatio; // Frame-rate independent scale factor
+
         // Stunned: can't move, slide to a smooth stop
         if (this.stunTimer > 0) {
             this.stunTimer -= dt;
-            // Frame-rate independent damping: decay ~0.3% per ms
             const damping = Math.pow(0.997, dt);
             this.vx *= damping;
             this.vy *= damping;
-            this.x += this.vx;
-            this.y += this.vy;
+            this.x += this.vx * s;
+            this.y += this.vy * s;
             return;
         }
 
@@ -77,15 +78,14 @@ class Player {
             this.tackleTimer -= dt;
             if (this.tackleTimer <= 0) {
                 this.isTackling = false;
-                this.tackleRecoveryTimer = 200; // 200ms recovery
+                this.tackleRecoveryTimer = 200;
             }
         }
 
         if (this.tackleRecoveryTimer > 0) {
             this.tackleRecoveryTimer -= dt;
-            // Player is immobile during recovery
-            this.vx *= 0.85;
-            this.vy *= 0.85;
+            this.vx *= Math.pow(0.85, s);
+            this.vy *= Math.pow(0.85, s);
         }
 
         if (this.powerUpTimer > 0) {
@@ -95,17 +95,17 @@ class Player {
             }
         }
 
-        // Apply friction
+        // Apply friction (frame-rate independent)
         const friction = (this.isDashing || this.isTackling) ? 0.995 : Physics.FRICTION;
-        this.vx *= friction;
-        this.vy *= friction;
+        this.vx *= Math.pow(friction, s);
+        this.vy *= Math.pow(friction, s);
 
         // Clamp speed
         const maxSpeed = (this.isDashing || this.isTackling) ? Physics.MAX_PLAYER_SPEED * 2 : this.getMaxSpeed();
         Physics.clampSpeed(this, maxSpeed);
 
-        this.x += this.vx;
-        this.y += this.vy;
+        this.x += this.vx * s;
+        this.y += this.vy * s;
     }
 
     getMaxSpeed() {
@@ -123,7 +123,7 @@ class Player {
     }
 
     applyInput(inputX, inputY) {
-        const accel = Physics.PLAYER_ACCELERATION;
+        const accel = Physics.PLAYER_ACCELERATION * Physics.dtRatio;
         this.vx += inputX * accel;
         this.vy += inputY * accel;
     }
@@ -254,8 +254,10 @@ class Ball {
     }
 
     update(dt) {
-        this.vx *= Physics.BALL_FRICTION;
-        this.vy *= Physics.BALL_FRICTION;
+        const s = Physics.dtRatio; // Frame-rate independent scale factor
+
+        this.vx *= Math.pow(Physics.BALL_FRICTION, s);
+        this.vy *= Math.pow(Physics.BALL_FRICTION, s);
 
         // Apply spin as a lateral force perpendicular to ball movement direction
         if (Math.abs(this.spin) > 0.01) {
@@ -263,32 +265,29 @@ class Ball {
             if (speed > 0.5) {
                 const dirX = this.vx / speed;
                 const dirY = this.vy / speed;
-                // Perpendicular to movement direction
                 const perpX = -dirY;
                 const perpY = dirX;
-                this.vx += perpX * this.spin * 0.1;
-                this.vy += perpY * this.spin * 0.1;
+                this.vx += perpX * this.spin * 0.1 * s;
+                this.vy += perpY * this.spin * 0.1 * s;
             }
-            // Decay spin
-            this.spin *= 0.97;
+            this.spin *= Math.pow(0.97, s);
         }
 
         Physics.clampSpeed(this, Physics.MAX_BALL_SPEED);
 
-        this.x += this.vx;
-        this.y += this.vy;
+        this.x += this.vx * s;
+        this.y += this.vy * s;
 
         // Trail effect — more particles during super kick
         const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
         if (this.superKick > 0 && speed > 1) {
-            // Dense fire trail
             this.trail.push({ x: this.x, y: this.y, life: 1.0 });
             this.trail.push({ x: this.x + (Math.random() - 0.5) * 6, y: this.y + (Math.random() - 0.5) * 6, life: 0.8 });
         } else if (speed > 3) {
             this.trail.push({ x: this.x, y: this.y, life: 1.0 });
         }
-        // Decay trail
-        const decayRate = this.superKick > 0 ? 0.03 : 0.05;
+        // Decay trail (scaled for consistent duration)
+        const decayRate = (this.superKick > 0 ? 0.03 : 0.05) * s;
         for (let i = this.trail.length - 1; i >= 0; i--) {
             this.trail[i].life -= decayRate;
             if (this.trail[i].life <= 0) this.trail.splice(i, 1);
