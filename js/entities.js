@@ -1,18 +1,17 @@
 // Game entities: Player, Ball, Field
 
 class Player {
-    constructor(x, y, team, isHuman = false, isKeeper = false) {
+    constructor(x, y, team, isHuman = false) {
         this.x = x;
         this.y = y;
         this.spawnX = x;
         this.spawnY = y;
         this.vx = 0;
         this.vy = 0;
-        this.radius = isKeeper ? 28 : 24;
+        this.radius = 24;
         this.mass = 1;
         this.team = team; // 'red' or 'blue'
         this.isHuman = isHuman;
-        this.isKeeper = isKeeper;
         this.kickCooldown = 0;
         this.dashCooldown = 0;
         this.dashTimer = 0;

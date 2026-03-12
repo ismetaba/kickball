@@ -88,12 +88,7 @@ class Game {
 
         let redIdx = 0, blueIdx = 0;
         for (const p of this.players) {
-            if (p.isKeeper) {
-                // Update keeper spawn position
-                const keeperPos = p.team === 'red' ? positions.redKeeper : positions.blueKeeper;
-                p.spawnX = keeperPos.x;
-                p.spawnY = keeperPos.y;
-            } else if (p.team === 'red') {
+            if (p.team === 'red') {
                 if (redIdx < positions.red.length) {
                     p.spawnX = positions.red[redIdx].x;
                     p.spawnY = positions.red[redIdx].y;
@@ -129,11 +124,6 @@ class Game {
             }
         }
 
-        // Keeper spawn positions (near each goal)
-        const goalCenterY = f.goalY + f.goalHeight / 2;
-        positions.redKeeper = { x: f.x + f.width * 0.15, y: goalCenterY };
-        positions.blueKeeper = { x: f.x + f.width * 0.85, y: goalCenterY };
-
         return positions;
     }
 
@@ -155,7 +145,10 @@ class Game {
             if (isHuman) {
                 this.humanPlayer = p;
             } else {
-                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty) });
+                const redAi = this.settings.difficulty === 'learned' && typeof Trainer !== 'undefined' && Trainer.hasTrainedAgent()
+                    ? Trainer.getBestAgent()
+                    : new AIController(this.settings.difficulty === 'learned' ? 'hard' : this.settings.difficulty);
+                this.aiControllers.push({ player: p, ai: redAi });
             }
         }
 
@@ -163,7 +156,10 @@ class Game {
         for (let i = 0; i < this.settings.teamSize; i++) {
             const p = new Player(positions.blue[i].x, positions.blue[i].y, 'blue', false);
             this.players.push(p);
-            this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty) });
+            const ai = this.settings.difficulty === 'learned' && typeof Trainer !== 'undefined' && Trainer.hasTrainedAgent()
+                ? Trainer.getBestAgent()
+                : new AIController(this.settings.difficulty === 'learned' ? 'hard' : this.settings.difficulty);
+            this.aiControllers.push({ player: p, ai });
         }
 
         this.rebuildTeamCache();
@@ -720,6 +716,31 @@ class Game {
                     this.renderer.spawnHitFlash(this.ball.x, this.ball.y, intensity);
                     Sound.ballBounce(intensity);
                 }
+
+                // Update lastKickedBy on significant deflections — this ensures
+                // that if a defender deflects a shot, it's attributed to them, not the original kicker
+                if (ballSpeed > 3) {
+                    this.ball.lastKickedBy = p;
+                }
+
+                // OWN-GOAL DEFLECTION PREVENTION: if collision sent ball toward player's own goal,
+                // dampen the toward-own-goal velocity to prevent accidental own goals
+                if (!p.isHuman) {
+                    const ownGoalX = p.team === 'red' ? this.field.x : this.field.x + this.field.width;
+                    const towardOwn = p.team === 'red' ? this.ball.vx < -1.5 : this.ball.vx > 1.5;
+                    const distToOwnGoal = Math.abs(p.x - ownGoalX);
+
+                    if (towardOwn && distToOwnGoal < this.field.width * 0.5) {
+                        // Scale dampening: stronger when closer to own goal
+                        const dangerFactor = 1 - (distToOwnGoal / (this.field.width * 0.5));
+                        const dampen = 0.1 + (1 - dangerFactor) * 0.3; // 0.1 near goal, 0.4 at midfield
+                        this.ball.vx *= dampen;
+                        // Push ball sideways toward nearest sideline instead
+                        const sideDir = this.ball.y < this.field.centerY ? -1 : 1;
+                        const redirectForce = Math.abs(this.ball.vx) * 0.6 + 1.5;
+                        this.ball.vy += sideDir * redirectForce;
+                    }
+                }
             }
 
             // Auto kick on contact: if player is charging (any amount) and touches ball, kick with current charge
@@ -771,9 +792,25 @@ class Game {
             }
 
             // Tackle: extra force on ball in tackle direction
+            // SAFETY: prevent tackle from sending ball toward own goal
             if (collided && p.isTackling) {
-                this.ball.vx += p.tackleDirX * Physics.KICK_FORCE * 0.8;
-                this.ball.vy += p.tackleDirY * Physics.KICK_FORCE * 0.8;
+                let tForceX = p.tackleDirX * Physics.KICK_FORCE * 0.8;
+                let tForceY = p.tackleDirY * Physics.KICK_FORCE * 0.8;
+
+                // Check if tackle force would send ball toward own goal
+                const ownGoalX = p.team === 'red' ? this.field.x : this.field.x + this.field.width;
+                const resultVx = this.ball.vx + tForceX;
+                const towardOwnGoal = p.team === 'red' ? resultVx < -1 : resultVx > 1;
+                const nearOwnGoal = Math.abs(this.ball.x - ownGoalX) < this.field.width * 0.35;
+
+                if (towardOwnGoal && nearOwnGoal) {
+                    // Redirect tackle force sideways/away from own goal instead
+                    const awayX = p.team === 'red' ? 1 : -1;
+                    tForceX = Math.abs(tForceX) * awayX;
+                }
+
+                this.ball.vx += tForceX;
+                this.ball.vy += tForceY;
                 this.ball.lastKickedBy = p;
                 this.addMomentum(p.team);
             }
@@ -880,15 +917,16 @@ class Game {
             document.getElementById('blue-score').textContent = this.blueScore;
         }
 
-        // Track who scored
-        if (this.ball.lastKickedBy) {
-            this.ball.lastKickedBy.goals++;
+        // Track who scored — only credit if they scored for their own team (not own goal)
+        const scorer = this.ball.lastKickedBy;
+        const isOwnGoal = scorer && scorer.team !== team;
+        if (scorer && !isOwnGoal) {
+            scorer.goals++;
         }
 
         // Show notification
         const notif = document.getElementById('goal-notification');
-        notif.querySelector('.goal-text').textContent = 'GOAL!';
-        const scorer = this.ball.lastKickedBy;
+        notif.querySelector('.goal-text').textContent = isOwnGoal ? 'OWN GOAL!' : 'GOAL!';
         notif.querySelector('.goal-scorer').textContent =
             scorer ? `${scorer.team.toUpperCase()} Team` : '';
         notif.classList.remove('hidden');
@@ -989,7 +1027,7 @@ class Game {
     switchToNearestTeammate() {
         if (!this.humanPlayer) return;
         const teammates = this.players.filter(p =>
-            p.team === this.humanPlayer.team && p !== this.humanPlayer && !p.isKeeper
+            p.team === this.humanPlayer.team && p !== this.humanPlayer
         );
         if (teammates.length === 0) return;
 
@@ -1018,7 +1056,7 @@ class Game {
     switchToNearestTeammate_remote() {
         if (!this.remoteHumanPlayer) return;
         const teammates = this.players.filter(p =>
-            p.team === this.remoteHumanPlayer.team && p !== this.remoteHumanPlayer && !p.isKeeper
+            p.team === this.remoteHumanPlayer.team && p !== this.remoteHumanPlayer
         );
         if (teammates.length === 0) return;
 
@@ -1041,7 +1079,7 @@ class Game {
     switchToNearestTeammate_p2() {
         if (!this.humanPlayer2) return;
         const teammates = this.players.filter(p =>
-            p.team === this.humanPlayer2.team && p !== this.humanPlayer2 && !p.isKeeper
+            p.team === this.humanPlayer2.team && p !== this.humanPlayer2
         );
         if (teammates.length === 0) return;
 

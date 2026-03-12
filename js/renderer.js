@@ -437,6 +437,33 @@ class Renderer {
             }
         }
 
+        // Dribble (çalım) effect: quick afterimage flickers showing agility
+        if (player.isDribbling) {
+            const time = Date.now() * 0.008;
+            const color = player.team === 'red' ? 'rgba(255,200,50,' : 'rgba(50,255,200,';
+            // Zigzag afterimages
+            for (let i = 0; i < 3; i++) {
+                const phase = time + i * 2.1;
+                const offsetX = Math.sin(phase * 3) * (10 + i * 5);
+                const offsetY = Math.cos(phase * 2.5) * (6 + i * 3);
+                const alpha = 0.3 - i * 0.08;
+                ctx.fillStyle = color + alpha + ')';
+                ctx.beginPath();
+                ctx.arc(player.x - player.vx * (i + 1) * 1.5 + offsetX,
+                        player.y - player.vy * (i + 1) * 1.5 + offsetY,
+                        player.radius * (0.7 - i * 0.15), 0, Math.PI * 2);
+                ctx.fill();
+            }
+            // Sparkle ring
+            ctx.strokeStyle = color + '0.6)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([3, 5]);
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, player.radius + 8 + Math.sin(time * 5) * 3, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
         // Power-up glow
         if (player.powerUp && player.powerUp !== 'frozen') {
             const colors = {

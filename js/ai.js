@@ -81,11 +81,33 @@ class AIController {
         if (len < 1) return false;
         // Use minimum kick force (7.8) as conservative estimate
         const nx = kx / len;
+        const ny = ky / len;
         const resultVx = nx * 7.8 + player.vx * 0.3;
-        // Red attacks right (+x), so own goal is left (-x). ResultVx < 0 = toward own goal.
-        // Blue attacks left (-x), so own goal is right (+x). ResultVx > 0 = toward own goal.
-        if (player.team === 'red') return resultVx < 0;
-        return resultVx > 0;
+        const resultVy = ny * 7.8 + player.vy * 0.3;
+
+        // Check X direction: toward own goal?
+        const towardOwnGoalX = player.team === 'red' ? resultVx < 0 : resultVx > 0;
+        if (!towardOwnGoalX) return false;
+
+        // Ball heading toward own goal on X — now check if it would enter goal area on Y
+        const ownGoalX = player.team === 'red' ? field.x : field.x + field.width;
+        const distToGoalX = Math.abs(ball.x - ownGoalX);
+        // Only dangerous if ball is within half the field of own goal
+        if (distToGoalX > field.width * 0.6) return false;
+
+        // Predict where ball would arrive at goal line Y
+        if (Math.abs(resultVx) < 0.5) return true; // Slow but going backward = dangerous
+        const timeToGoal = distToGoalX / Math.abs(resultVx);
+        const predictedY = ball.y + resultVy * timeToGoal;
+
+        // If predicted Y is anywhere near the goal area, it's dangerous
+        const goalMargin = 40; // Extra margin for safety
+        const goalTop = field.goalY - goalMargin;
+        const goalBottom = field.goalY + field.goalHeight + goalMargin;
+
+        if (predictedY > goalTop && predictedY < goalBottom) return true;
+
+        return false;
     }
 
     update(player, ball, field, teammates, opponents, dt) {
@@ -158,8 +180,7 @@ class AIController {
     }
 
     assignRole(player, ball, field, teammates, opponents) {
-        const fieldMates = teammates.filter(t => !t.isKeeper);
-        if (fieldMates.length <= 1) {
+        if (teammates.length <= 1) {
             this.role = 'attack';
             return;
         }
@@ -167,7 +188,7 @@ class AIController {
         const dist = Physics.distance(player, ball);
         // Rank by distance to ball (0 = closest)
         let rank = 0;
-        for (const t of fieldMates) {
+        for (const t of teammates) {
             if (t === player) continue;
             if (Physics.distance(t, ball) < dist) rank++;
         }
@@ -193,7 +214,7 @@ class AIController {
         if (prevRole === 'attack' && newRole !== 'attack') {
             // Only give up attack role if clearly NOT the closest
             let closestDist = Infinity;
-            for (const t of fieldMates) {
+            for (const t of teammates) {
                 if (t === player) continue;
                 const td = Physics.distance(t, ball);
                 if (td < closestDist) closestDist = td;
@@ -215,10 +236,20 @@ class AIController {
             const playerToOwnGoal = Math.abs(player.x - ownGoalX);
             const ballToOwnGoal = Math.abs(predicted.x - ownGoalX);
 
-            if (playerToOwnGoal > ballToOwnGoal && distToBall < 80) {
+            // Check if ball is moving fast toward our goal — if so, approach from the side
+            const ballSpeedTowardGoal = player.team === 'red' ? -ball.vx : ball.vx;
+            const ballMovingTowardOwnGoal = ballSpeedTowardGoal > 3;
+
+            if (ballMovingTowardOwnGoal && distToBall < 100) {
+                // Ball coming toward our goal — approach from the SIDE to redirect, not head-on
+                const sideOffset = player.y > predicted.y ? 30 : -30;
+                const awayFromGoal = player.team === 'red' ? 15 : -15;
+                this.targetX = predicted.x + awayFromGoal;
+                this.targetY = predicted.y + sideOffset;
+            } else if (playerToOwnGoal > ballToOwnGoal && distToBall < 80) {
                 // We're on the wrong side (ball between us and own goal) and close
                 // Approach from goal-side to avoid pushing ball toward own goal
-                const goalSideOffset = player.team === 'red' ? -18 : 18;
+                const goalSideOffset = player.team === 'red' ? -25 : 25;
                 this.targetX = predicted.x + goalSideOffset;
                 this.targetY = predicted.y;
             } else {
@@ -242,11 +273,29 @@ class AIController {
 
     playDefend(player, ball, field, teammates, opponents, distToBall, predicted) {
         const ownGoalX = player.team === 'red' ? field.x : field.x + field.width;
+        const goalCenterY = field.goalY + field.goalHeight / 2;
         const ballOnOurSide = player.team === 'red'
             ? ball.x < field.centerX
             : ball.x > field.centerX;
 
-        if (distToBall < 55 && ballOnOurSide) {
+        // Check if ball is moving fast toward our goal — if so, get OUT of the shooting lane
+        const ballSpeedTowardGoal = player.team === 'red' ? -ball.vx : ball.vx;
+        const ballMovingFastTowardGoal = ballSpeedTowardGoal > 3;
+        const inShootingLane = Math.abs(player.y - ball.y) < 40
+            && ((player.team === 'red' && player.x < ball.x) || (player.team === 'blue' && player.x > ball.x));
+
+        if (ballMovingFastTowardGoal && inShootingLane && distToBall < 120) {
+            // CRITICAL: Get out of the way — move laterally to avoid deflecting ball into own goal
+            const sideDir = player.y < ball.y ? -1 : 1;
+            // If player is very close to ball Y, pick a side based on goal center
+            if (Math.abs(player.y - ball.y) < 15) {
+                const sideDirFromGoal = player.y < goalCenterY ? -1 : 1;
+                this.targetY = ball.y + sideDirFromGoal * 50;
+            } else {
+                this.targetY = ball.y + sideDir * 50;
+            }
+            this.targetX = player.x; // Don't change X, just dodge sideways
+        } else if (distToBall < 55 && ballOnOurSide) {
             // Close AND ball is in our half: engage carefully from goal side
             const playerToOwnGoal = Math.abs(player.x - ownGoalX);
             const ballToOwnGoal = Math.abs(predicted.x - ownGoalX);
@@ -258,8 +307,8 @@ class AIController {
             } else {
                 // On wrong side — approach from the side (not directly in front)
                 // This avoids standing in the shooting lane and causing deflection own goals
-                const sideOffset = (player.y > ball.y) ? 25 : -25;
-                const goalSideOffset = player.team === 'red' ? -18 : 18;
+                const sideOffset = (player.y > ball.y) ? 35 : -35;
+                const goalSideOffset = player.team === 'red' ? -25 : 25;
                 this.targetX = predicted.x + goalSideOffset;
                 this.targetY = predicted.y + sideOffset;
             }
@@ -269,7 +318,10 @@ class AIController {
             this.targetX = ownGoalX + (ball.x - ownGoalX) * t;
 
             // Track ball Y but stay centered — don't drift to extremes
-            this.targetY = field.centerY + (ball.y - field.centerY) * 0.45 * this.positioningSkill;
+            // OFFSET from direct ball-to-goal line to avoid deflections
+            const directLineY = ball.y;
+            const offsetDir = player.y > goalCenterY ? 1 : -1;
+            this.targetY = field.centerY + (directLineY - field.centerY) * 0.45 * this.positioningSkill + offsetDir * 20;
 
             // Stay well in defensive half — create clear separation from attacker
             if (player.team === 'red') {
@@ -408,23 +460,16 @@ class AIController {
         return { kick: false, chargeRatio: 0.3 };
     }
 
-    // Find best spot in goal to aim at (exploit GK position)
+    // Find best spot in goal to aim at
     bestGoalSpot(opponents, field) {
-        const goalCenterY = field.goalY + field.goalHeight / 2;
         const goalTop = field.goalY + 12;
         const goalBottom = field.goalY + field.goalHeight - 12;
-
-        // Find opponent goalkeeper position
-        let gkY = goalCenterY;
-        for (const o of opponents) {
-            if (o.isKeeper) { gkY = o.y; break; }
-        }
 
         // Inaccuracy for lower difficulties
         const jitter = (1 - this.accuracy) * 30 * (Math.random() - 0.5);
 
-        // Aim for the corner furthest from GK
-        if (gkY < goalCenterY + 5) {
+        // Aim for a random corner
+        if (Math.random() < 0.5) {
             return Math.min(goalBottom + jitter, goalBottom);
         } else {
             return Math.max(goalTop + jitter, goalTop);
@@ -438,7 +483,7 @@ class AIController {
         let bestScore = -Infinity;
 
         for (const t of teammates) {
-            if (t === player || t.isKeeper) continue;
+            if (t === player) continue;
 
             const distToGoal = Math.abs(goalX - t.x);
             const isAhead = player.team === 'red' ? t.x > ball.x + 20 : t.x < ball.x - 20;
@@ -518,201 +563,3 @@ class AIController {
     }
 }
 
-// Goalkeeper AI controller
-class GoalkeeperAI {
-    constructor(difficulty = 'medium') {
-        this.setDifficulty(difficulty);
-        this.smoothY = 0; // smoothed ball Y tracking
-        this.initialized = false;
-    }
-
-    setDifficulty(difficulty) {
-        switch (difficulty) {
-            case 'easy':
-                this.reflexSpeed = 0.03;
-                this.diveSpeed = 0.6;
-                this.rushDistance = 0.6;
-                this.mistakeChance = 0.12;
-                this.anticipation = 0;
-                break;
-            case 'hard':
-                this.reflexSpeed = 0.22;     // Lightning-fast tracking
-                this.diveSpeed = 1.0;
-                this.rushDistance = 1.0;
-                this.mistakeChance = 0.002;  // Near-perfect positioning
-                this.anticipation = 0.6;     // Strong trajectory anticipation
-                break;
-            default: // medium
-                this.reflexSpeed = 0.06;
-                this.diveSpeed = 0.8;
-                this.rushDistance = 0.8;
-                this.mistakeChance = 0.06;
-                this.anticipation = 0.2;
-        }
-    }
-
-    update(player, ball, field, teammates, opponents, dt) {
-        // Initialize smoothY to goal center on first call
-        if (!this.initialized) {
-            this.smoothY = field.centerY;
-            this.initialized = true;
-        }
-
-        const isRed = player.team === 'red';
-
-        // Our goal line X position
-        const goalLineX = isRed ? field.x : field.x + field.width;
-        // Keeper base X: position depends on difficulty (closer = better coverage)
-        const baseDepth = this.reflexSpeed > 0.15 ? 0.10 : 0.15; // Hard mode stays closer
-        const baseX = isRed
-            ? field.x + field.width * baseDepth
-            : field.x + field.width * (1 - baseDepth);
-
-        const goalCenterY = field.goalY + field.goalHeight / 2;
-        const goalTop = field.goalY;
-        const goalBottom = field.goalY + field.goalHeight;
-
-        // Penalty area boundaries
-        const penaltyLeft = isRed
-            ? field.x
-            : field.x + field.width - field.penaltyWidth;
-        const penaltyRight = isRed
-            ? field.x + field.penaltyWidth
-            : field.x + field.width;
-        const penaltyTop = field.penaltyY;
-        const penaltyBottom = field.penaltyY + field.penaltyHeight;
-
-        // Compute ball distance to our goal line
-        const ballDistToGoal = Math.abs(ball.x - goalLineX);
-
-        // Is ball heading toward our goal?
-        const ballMovingTowardGoal = isRed
-            ? ball.vx < -1
-            : ball.vx > 1;
-
-        const ballSpeed = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
-
-        // Anticipatory tracking: blend current Y with predicted Y
-        const anticipateY = ball.y + ball.vy * this.anticipation * 10;
-        const trackTarget = ballMovingTowardGoal ? anticipateY : ball.y;
-
-        // Smooth tracking of ball Y (with reflex speed, dt-scaled)
-        const trackingSpeed = this.reflexSpeed * Physics.dtRatio;
-        this.smoothY += (trackTarget - this.smoothY) * trackingSpeed;
-
-        // Goalkeeper mistake: occasionally misjudge position
-        if (Math.random() < this.mistakeChance) {
-            this.smoothY += (Math.random() - 0.5) * field.goalHeight * 0.25;
-        }
-
-        // Clamp smoothY to goal area
-        const clampedY = Math.max(goalTop + player.radius, Math.min(goalBottom - player.radius, this.smoothY));
-
-        let targetX = baseX;
-        let targetY = clampedY;
-
-        let kick = false;
-        let dash = false;
-
-        // Rush out when ball is in penalty area
-        const ballInPenaltyX = isRed
-            ? ball.x < penaltyRight
-            : ball.x > penaltyLeft;
-        const ballInPenaltyY = ball.y > penaltyTop && ball.y < penaltyBottom;
-
-        if (ballInPenaltyX && ballInPenaltyY && ballDistToGoal < field.penaltyWidth * 1.2) {
-            // Rush toward ball but don't go past penalty area edge
-            const rushX = isRed
-                ? Math.min(ball.x - 15, penaltyRight - player.radius)
-                : Math.max(ball.x + 15, penaltyLeft + player.radius);
-            targetX = rushX * this.rushDistance + baseX * (1 - this.rushDistance);
-            targetY = ball.y;
-        }
-
-        // Dive logic: ball is fast and heading toward goal
-        if (ballMovingTowardGoal && ballSpeed > 4 && ballDistToGoal < field.width * 0.45) {
-            // Predict where ball will cross the goal line
-            const timeToGoal = ballDistToGoal / Math.abs(ball.vx);
-            let predictedY = ball.y + ball.vy * timeToGoal;
-
-            // Account for ball spin (lateral curve)
-            if (Math.abs(ball.spin) > 0.01) {
-                predictedY += ball.spin * timeToGoal * 0.05;
-            }
-
-            // If predicted Y is within goal area, dive there
-            if (predictedY > goalTop - 30 && predictedY < goalBottom + 30) {
-                const diveTargetY = Math.max(goalTop + player.radius, Math.min(goalBottom - player.radius, predictedY));
-
-                // For fast shots, accelerate tracking toward predicted position
-                if (ballSpeed > 8 && ballDistToGoal < field.width * 0.3) {
-                    // Boost tracking: move 60% toward target instantly
-                    this.smoothY += (diveTargetY - this.smoothY) * 0.6;
-                }
-                targetY = diveTargetY;
-
-                // Move closer to goal line for the save
-                const saveX = isRed
-                    ? field.x + field.width * 0.05
-                    : field.x + field.width * 0.95;
-                targetX = saveX;
-
-                // Dash to dive if the ball is close and fast
-                if (ballDistToGoal < field.width * 0.3 && ballSpeed > 5) {
-                    const distToTarget = Math.abs(player.y - diveTargetY);
-                    if (distToTarget > 15) {
-                        dash = true;
-                    }
-                }
-            }
-        }
-
-        // When ball is far away, return to center of goal
-        if (ballDistToGoal > field.width * 0.55) {
-            targetX = baseX;
-            targetY = goalCenterY;
-        }
-
-        // Clamp target within penalty area
-        if (isRed) {
-            targetX = Math.max(field.x + player.radius, Math.min(penaltyRight - player.radius, targetX));
-        } else {
-            targetX = Math.max(penaltyLeft + player.radius, Math.min(field.x + field.width - player.radius, targetX));
-        }
-        targetY = Math.max(field.y + player.radius, Math.min(field.y + field.height - player.radius, targetY));
-
-        // Move toward target
-        const dx = targetX - player.x;
-        const dy = targetY - player.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-
-        if (dist > 2) {
-            const n = Physics.normalize(dx, dy);
-            const speed = Math.min(dist / 8, 1); // Very fast response for saves
-            player.applyInput(n.x * speed, n.y * speed);
-        }
-
-        // Kick ball away if close enough — but ONLY if kick goes away from our goal
-        const distToBall = Physics.distance(player, ball);
-        const kickRange = player.radius + ball.radius + 10;
-        if (distToBall < kickRange) {
-            // Kick direction = ball.pos - player.pos
-            const kickDirX = ball.x - player.x;
-            const kickDirY = ball.y - player.y;
-            // Red GK: own goal is left (field.x), so kick must go right (+x)
-            // Blue GK: own goal is right (field.x+width), so kick must go left (-x)
-            const kickGoesAway = isRed ? kickDirX > 0 : kickDirX < 0;
-
-            // Also check Y direction — don't kick if it would go toward goal posts
-            const kickAimsWide = Math.abs(kickDirY) > Math.abs(kickDirX) * 0.3;
-            const nearGoalPost = (ball.y < goalTop + 20 || ball.y > goalBottom - 20);
-
-            if (kickGoesAway && !(nearGoalPost && kickAimsWide)) {
-                kick = true;
-            }
-            // If kick would go toward own goal, don't kick — just block with body
-        }
-
-        return { kick, dash, chargeRatio: 0.5 };
-    }
-}

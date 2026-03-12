@@ -73,6 +73,59 @@ class UI {
         document.getElementById('btn-back-help').addEventListener('click', () => {
             this.showScreen('menu');
         });
+
+        // Train AI
+        document.getElementById('btn-train-ai').addEventListener('click', () => {
+            this.showScreen('train-ai');
+            this.updateTrainUI();
+        });
+
+        document.getElementById('btn-back-train').addEventListener('click', () => {
+            Trainer.stop();
+            this.updateTrainButtons(false);
+            this.showScreen('menu');
+        });
+
+        document.getElementById('btn-train-start').addEventListener('click', () => {
+            this._trainStartTime = performance.now();
+            this._trainStartGen = Trainer.generation;
+            Trainer.onProgress = (gen, fit) => this.updateTrainUI(gen, fit);
+            Trainer.start();
+            this.updateTrainButtons(true);
+            document.getElementById('train-status').textContent = 'Training...';
+        });
+
+        document.getElementById('btn-train-stop').addEventListener('click', () => {
+            Trainer.stop();
+            this.updateTrainButtons(false);
+            document.getElementById('train-status').textContent = 'Stopped';
+        });
+
+        document.getElementById('btn-train-reset').addEventListener('click', () => {
+            Trainer.resetTraining();
+            this.updateTrainUI(0, 0);
+            document.getElementById('train-status').textContent = 'Reset';
+            document.getElementById('btn-train-test').disabled = true;
+        });
+
+        document.getElementById('btn-train-test').addEventListener('click', () => {
+            // Start a quick match with the learned AI
+            this.game.settings.teamSize = 2;
+            this.game.settings.difficulty = 'learned';
+            this.game.settings.duration = 120;
+            this.game.settings.goalLimit = 5;
+            this.game.settings.powerups = false;
+            this.game.settings.map = 'classic';
+            this.game.practiceMode = false;
+            this.showScreen('game');
+            document.getElementById('red-score').textContent = '0';
+            document.getElementById('blue-score').textContent = '0';
+            document.getElementById('timer').textContent = '2:00';
+            this.game.startMatch();
+            if (!this.controls) {
+                this.controls = new Controls(this.game);
+            }
+        });
     }
 
     setupSettingsEvents() {
@@ -593,6 +646,38 @@ class UI {
             clearInterval(this.pingUpdateInterval);
             this.pingUpdateInterval = null;
         }
+    }
+
+    updateTrainUI(gen, fit) {
+        gen = gen ?? Trainer.generation;
+        fit = fit ?? Trainer.bestFitness;
+        document.getElementById('train-generation').textContent = gen;
+        document.getElementById('train-fitness').textContent = fit > -Infinity ? fit.toFixed(1) : '0.0';
+        // Progress bar: cap at 200 generations for visual
+        const pct = Math.min(gen / 200 * 100, 100);
+        document.getElementById('train-progress-fill').style.width = pct + '%';
+        // Show speed (gen/s)
+        if (this._trainStartTime && Trainer.isTraining) {
+            const elapsed = (performance.now() - this._trainStartTime) / 1000;
+            const gensDone = gen - (this._trainStartGen || 0);
+            if (elapsed > 0.5) {
+                const speed = (gensDone / elapsed).toFixed(1);
+                document.getElementById('train-status').textContent = `Training... ${speed} gen/s`;
+            }
+        }
+        // Enable test button if we have a trained agent
+        document.getElementById('btn-train-test').disabled = !Trainer.hasTrainedAgent();
+        // Enable learned difficulty button
+        const learnedBtn = document.getElementById('btn-diff-learned');
+        if (learnedBtn) {
+            learnedBtn.disabled = !Trainer.hasTrainedAgent();
+            learnedBtn.style.opacity = Trainer.hasTrainedAgent() ? '1' : '0.4';
+        }
+    }
+
+    updateTrainButtons(isTraining) {
+        document.getElementById('btn-train-start').disabled = isTraining;
+        document.getElementById('btn-train-stop').disabled = !isTraining;
     }
 
     resetLobby() {
