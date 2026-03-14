@@ -49,7 +49,7 @@ class Controls {
             }
         }, { passive: false });
 
-        document.addEventListener('touchend', (e) => {
+        const releaseJoystick = (e) => {
             for (const touch of e.changedTouches) {
                 if (touch.identifier === this.joystickId) {
                     this.joystickActive = false;
@@ -59,7 +59,9 @@ class Controls {
                     this.joystickThumb.style.transform = 'translate(0px, 0px)';
                 }
             }
-        });
+        };
+        document.addEventListener('touchend', releaseJoystick);
+        document.addEventListener('touchcancel', releaseJoystick);
 
         // Kick button (charged kick: hold to charge, release to kick)
         kickBtn.addEventListener('touchstart', (e) => {
@@ -146,24 +148,50 @@ class Controls {
 
     setupKeyboard() {
         const keys = {};
+        this._keys = keys; // expose for clearing
         this.lastDashKeyTapTime2 = 0;
 
+        // Clear all input when window loses focus to prevent stuck movement
+        const clearAllInput = () => {
+            for (const k in keys) keys[k] = false;
+            this.game.input.x = 0;
+            this.game.input.y = 0;
+            this.game.input.kickCharging = false;
+            this.game.input2.x = 0;
+            this.game.input2.y = 0;
+            this.game.input2.kickCharging = false;
+            // Also reset joystick in case touchcancel was missed
+            if (this.joystickActive) {
+                this.joystickActive = false;
+                this.joystickId = null;
+                this.joystickThumb.style.transform = 'translate(0px, 0px)';
+            }
+        };
+        window.addEventListener('blur', clearAllInput);
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) clearAllInput();
+        });
+
         document.addEventListener('keydown', (e) => {
-            keys[e.key] = true;
+            // Normalize letter keys to lowercase to prevent stuck keys
+            // when CapsLock or Shift state changes between keydown/keyup
+            const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+            if (keys[key]) return; // Ignore key repeat
+            keys[key] = true;
 
             // Prevent arrow keys and space from scrolling
-            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(e.key)) {
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(key)) {
                 e.preventDefault();
             }
 
             // --- Player 1: WASD + Space ---
-            if (e.key === ' ') {
+            if (key === ' ') {
                 if (!this.game.input.kickCharging) {
                     this.game.input.kickCharging = true;
                     this.game.input.kickChargeStart = performance.now();
                 }
             }
-            if (e.key === 'Shift') {
+            if (key === 'Shift') {
                 const now = performance.now();
                 if (now - this.lastDashKeyTapTime < 300) {
                     this.game.input.tackle = true;
@@ -173,18 +201,18 @@ class Controls {
                 }
                 this.lastDashKeyTapTime = now;
             }
-            if (e.key === 'q' || e.key === 'Q') {
+            if (key === 'q') {
                 this.game.input.switchPlayer = true;
             }
 
             // --- Player 2: Arrow Keys + Enter/Numpad ---
-            if (e.key === 'Enter') {
+            if (key === 'Enter') {
                 if (!this.game.input2.kickCharging) {
                     this.game.input2.kickCharging = true;
                     this.game.input2.kickChargeStart = performance.now();
                 }
             }
-            if (e.key === '/' || e.key === 'NumpadDecimal') {
+            if (key === '/' || key === 'NumpadDecimal') {
                 const now = performance.now();
                 if (now - this.lastDashKeyTapTime2 < 300) {
                     this.game.input2.tackle = true;
@@ -194,11 +222,11 @@ class Controls {
                 }
                 this.lastDashKeyTapTime2 = now;
             }
-            if (e.key === '.' || e.key === 'Numpad0') {
+            if (key === '.' || key === 'Numpad0') {
                 this.game.input2.switchPlayer = true;
             }
 
-            if (e.key === 'Escape') {
+            if (key === 'Escape') {
                 if (this.game.isRunning && !this.game.matchOver) {
                     if (this.game.isPaused) this.game.resume();
                     else this.game.pause();
@@ -207,10 +235,11 @@ class Controls {
         });
 
         document.addEventListener('keyup', (e) => {
-            keys[e.key] = false;
+            const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+            keys[key] = false;
 
             // P1 kick release
-            if (e.key === ' ') {
+            if (key === ' ') {
                 if (this.game.input.kickCharging) {
                     const holdTime = performance.now() - this.game.input.kickChargeStart;
                     this.game.input.kickChargeTime = Math.min(holdTime, 1000);
@@ -219,7 +248,7 @@ class Controls {
                 }
             }
             // P2 kick release
-            if (e.key === 'Enter') {
+            if (key === 'Enter') {
                 if (this.game.input2.kickCharging) {
                     const holdTime = performance.now() - this.game.input2.kickChargeStart;
                     this.game.input2.kickChargeTime = Math.min(holdTime, 1000);
@@ -231,12 +260,12 @@ class Controls {
 
         // Keyboard movement polling
         const pollKeyboard = () => {
-            // P1: WASD
+            // P1: WASD (always lowercase — normalized in keydown/keyup)
             let kx = 0, ky = 0;
-            if (keys['a'] || keys['A']) kx -= 1;
-            if (keys['d'] || keys['D']) kx += 1;
-            if (keys['w'] || keys['W']) ky -= 1;
-            if (keys['s'] || keys['S']) ky += 1;
+            if (keys['a']) kx -= 1;
+            if (keys['d']) kx += 1;
+            if (keys['w']) ky -= 1;
+            if (keys['s']) ky += 1;
 
             if (kx !== 0 || ky !== 0) {
                 const len = Math.sqrt(kx * kx + ky * ky);
