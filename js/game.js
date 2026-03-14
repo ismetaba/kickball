@@ -27,6 +27,8 @@ class Game {
         this.isPaused = false;
         this.isGoalScored = false;
         this.goalTimer = 0;
+        this.kickoffTeam = null;     // team that gets kickoff (was scored on)
+        this.kickoffActive = false;  // true while kickoff restriction is active
         this.lastTime = 0;
         this.matchOver = false;
 
@@ -174,6 +176,8 @@ class Game {
         this.matchOver = false;
         this.isGoalScored = false;
         this.goalTimer = 0;
+        this.kickoffTeam = null;
+        this.kickoffActive = false;
         this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
         this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
         this.timeScale = 1.0;
@@ -232,6 +236,8 @@ class Game {
         this.matchOver = false;
         this.isGoalScored = false;
         this.goalTimer = 0;
+        this.kickoffTeam = null;
+        this.kickoffActive = false;
         this.practiceMode = false;
         this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
         this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
@@ -268,6 +274,8 @@ class Game {
         this.matchOver = false;
         this.isGoalScored = false;
         this.goalTimer = 0;
+        this.kickoffTeam = null;
+        this.kickoffActive = false;
         this.practiceMode = true;
         this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
 
@@ -335,6 +343,7 @@ class Game {
                 notif.classList.remove('hidden');
                 this.isGoalScored = true;
                 this.goalTimer = 2500;
+                this.kickoffTeam = data.team === 'red' ? 'blue' : 'red';
                 this.renderer.triggerShake(1.0);
                 this.renderer.spawnConfetti(data.team);
             };
@@ -357,6 +366,8 @@ class Game {
         this.matchOver = false;
         this.isGoalScored = false;
         this.goalTimer = 0;
+        this.kickoffTeam = null;
+        this.kickoffActive = false;
         this.practiceMode = false;
         this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
         this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
@@ -708,6 +719,11 @@ class Game {
         for (const p of this.players) {
             const collided = Physics.resolveCircleCollision(p, this.ball, Physics.PLAYER_BOUNCE, Physics.BALL_BOUNCE);
 
+            // Clear kickoff restriction when kickoff team touches the ball
+            if (collided && this.kickoffActive && p.team === this.kickoffTeam) {
+                this.kickoffActive = false;
+            }
+
             // Hit flash + sound on collision
             if (collided) {
                 const ballSpeed = Math.sqrt(this.ball.vx * this.ball.vx + this.ball.vy * this.ball.vy);
@@ -848,6 +864,48 @@ class Game {
         for (const p of this.players) {
             Physics.constrainToField(p, this.field, true);
         }
+
+        // Kickoff restriction: scoring team can't cross center line or enter center circle
+        if (this.kickoffActive && this.kickoffTeam) {
+            const restrictedTeam = this.kickoffTeam === 'red' ? 'blue' : 'red';
+            const centerX = this.field.centerX;
+            const centerY = this.field.centerY;
+            const circleR = this.field.centerRadius;
+            for (const p of this.players) {
+                if (p.team !== restrictedTeam) continue;
+
+                // Block from crossing center line
+                if (restrictedTeam === 'red') {
+                    if (p.x + p.radius > centerX) {
+                        p.x = centerX - p.radius;
+                        if (p.vx > 0) p.vx = 0;
+                    }
+                } else {
+                    if (p.x - p.radius < centerX) {
+                        p.x = centerX + p.radius;
+                        if (p.vx < 0) p.vx = 0;
+                    }
+                }
+
+                // Block from entering center circle
+                const dx = p.x - centerX;
+                const dy = p.y - centerY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const minDist = circleR + p.radius;
+                if (dist < minDist && dist > 0) {
+                    const nx = dx / dist;
+                    const ny = dy / dist;
+                    p.x = centerX + nx * minDist;
+                    p.y = centerY + ny * minDist;
+                    // Kill velocity toward center
+                    const dot = p.vx * nx + p.vy * ny;
+                    if (dot < 0) {
+                        p.vx -= dot * nx;
+                        p.vy -= dot * ny;
+                    }
+                }
+            }
+        }
         const wallHit = Physics.constrainToField(this.ball, this.field, false);
         if (wallHit) {
             const spd = Math.sqrt(this.ball.vx * this.ball.vx + this.ball.vy * this.ball.vy);
@@ -934,6 +992,10 @@ class Game {
         this.isGoalScored = true;
         this.goalTimer = 2500;
 
+        // Set kickoff team: the team that was scored ON gets the kickoff
+        // 'team' is who scored, so the other team gets the kickoff
+        this.kickoffTeam = team === 'red' ? 'blue' : 'red';
+
         // Goal sound + heavy screen shake
         Sound.goal();
         this.renderer.triggerShake(1.0);
@@ -969,6 +1031,10 @@ class Game {
         this.ball.reset();
         for (const p of this.players) p.reset();
         this.powerUpManager.reset();
+
+        // Activate kickoff restriction: the team that did NOT score gets kickoff
+        // The scoring team cannot cross the center line until the other team touches the ball
+        this.kickoffActive = true;
     }
 
     endMatch() {
@@ -1103,6 +1169,12 @@ class Game {
         this.renderer.clear();
         this.renderer.trackedBall = this.ball;
         this.renderer.drawField(this.field);
+
+        // Kickoff barrier visual
+        if (this.kickoffActive && this.kickoffTeam) {
+            const restrictedTeam = this.kickoffTeam === 'red' ? 'blue' : 'red';
+            this.renderer.drawKickoffBarrier(this.field, restrictedTeam);
+        }
 
         // Power-ups
         this.powerUpManager.draw(this.renderer.ctx);

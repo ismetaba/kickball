@@ -759,6 +759,68 @@ class Renderer {
         ctx.globalAlpha = 1;
     }
 
+    drawKickoffBarrier(field, restrictedTeam) {
+        const ctx = this.ctx;
+        const cx = field.centerX;
+        const cy = field.centerY;
+        const cr = field.centerRadius;
+        const time = performance.now() / 1000;
+
+        // Pulsing glow effect
+        const alpha = 0.3 + Math.sin(time * 4) * 0.15;
+        const color = restrictedTeam === 'red'
+            ? `rgba(233, 69, 96, ${alpha})`
+            : `rgba(83, 216, 251, ${alpha})`;
+
+        ctx.save();
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 15;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.setLineDash([10, 6]);
+        ctx.lineDashOffset = -time * 40;
+
+        // Draw barrier line (only outside center circle)
+        ctx.beginPath();
+        ctx.moveTo(cx, field.y);
+        ctx.lineTo(cx, cy - cr);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(cx, cy + cr);
+        ctx.lineTo(cx, field.y + field.height);
+        ctx.stroke();
+
+        // Draw center circle barrier
+        ctx.beginPath();
+        ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Fill center circle with restricted color
+        const circleAlpha = 0.06 + Math.sin(time * 3) * 0.03;
+        const circleColor = restrictedTeam === 'red'
+            ? `rgba(233, 69, 96, ${circleAlpha})`
+            : `rgba(83, 216, 251, ${circleAlpha})`;
+        ctx.fillStyle = circleColor;
+        ctx.beginPath();
+        ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Draw forbidden zone overlay on the opponent half
+        const zoneAlpha = 0.04 + Math.sin(time * 3) * 0.02;
+        const zoneColor = restrictedTeam === 'red'
+            ? `rgba(233, 69, 96, ${zoneAlpha})`
+            : `rgba(83, 216, 251, ${zoneAlpha})`;
+        ctx.fillStyle = zoneColor;
+        if (restrictedTeam === 'red') {
+            ctx.fillRect(cx, field.y, field.width / 2, field.height);
+        } else {
+            ctx.fillRect(field.x, field.y, field.width / 2, field.height);
+        }
+
+        ctx.restore();
+    }
+
     drawDashCooldown(player) {
         if (player.dashCooldown <= 0) return;
 
