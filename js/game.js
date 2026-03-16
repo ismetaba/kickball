@@ -32,8 +32,8 @@ class Game {
         this.lastTime = 0;
         this.matchOver = false;
 
-        this.input = { x: 0, y: 0, kick: false, tackle: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
-        this.input2 = { x: 0, y: 0, kick: false, tackle: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
+        this.input = { x: 0, y: 0, kick: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
+        this.input2 = { x: 0, y: 0, kick: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
         this.timeScale = 1.0;
         this.slowMoTimer = 0;
         this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
@@ -47,7 +47,7 @@ class Game {
         this.isOnline = false;
         this.isHost = false;
         this.network = null;
-        this.remoteInput = { x: 0, y: 0, tackle: false, kickCharging: false, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
+        this.remoteInput = { x: 0, y: 0, kickCharging: false, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
         this.remoteHumanPlayer = null;
 
         // Stats
@@ -208,7 +208,7 @@ class Game {
             if (isHuman) {
                 this.humanPlayer = p;
             } else {
-                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'medium') });
+                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'normal') });
             }
         }
 
@@ -220,7 +220,7 @@ class Game {
             if (isHuman) {
                 this.humanPlayer2 = p;
             } else {
-                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'medium') });
+                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'normal') });
             }
         }
 
@@ -310,7 +310,7 @@ class Game {
                 if (isHost) this.humanPlayer = p;
                 else this.remoteHumanPlayer = p;
             } else {
-                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'medium') });
+                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'normal') });
             }
         }
 
@@ -323,7 +323,7 @@ class Game {
                 if (isHost) this.remoteHumanPlayer = p;
                 else this.humanPlayer = p;
             } else {
-                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'medium') });
+                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'normal') });
             }
         }
 
@@ -421,12 +421,11 @@ class Game {
                 hp.applyInput(this.input.x, this.input.y);
 
                 if (this.input.kickCharging) {
-                    hp.kickChargeRatio = Math.min(this.input.kickChargeTime / 1000, 1);
+                    hp.kickChargeRatio = Math.min(this.input.kickChargeTime / 1500, 1);
                 } else {
                     hp.kickChargeRatio = 0;
                 }
 
-                if (this.input.tackle) hp.tackle(this.ball);
                 if (this.input.switchPlayer) this.switchToNearestTeammate();
 
                 // Move own player locally (dt-scaled)
@@ -445,7 +444,6 @@ class Game {
             // Only consume one-shot inputs after they were actually sent
             if (sent) {
                 this.input.kickRelease = false;
-                this.input.tackle = false;
                 this.input.switchPlayer = false;
             }
             return;
@@ -504,9 +502,9 @@ class Game {
 
             // Track charge time for visual feedback + slow player while charging
             if (this.input.kickCharging) {
-                this.humanPlayer.kickChargeRatio = Math.min((performance.now() - this.input.kickChargeStart) / 1000, 1);
+                this.humanPlayer.kickChargeRatio = Math.min((performance.now() - this.input.kickChargeStart) / 1500, 1);
                 // Slow player down while holding kick (more charge = slower)
-                const slowFactor = 1 - this.humanPlayer.kickChargeRatio * 0.12;
+                const slowFactor = 1 - this.humanPlayer.kickChargeRatio * 0.04;
                 this.humanPlayer.vx *= Math.pow(slowFactor, Physics.dtRatio);
                 this.humanPlayer.vy *= Math.pow(slowFactor, Physics.dtRatio);
             } else {
@@ -515,7 +513,8 @@ class Game {
 
             // Charged kick: released after charging
             if (this.input.kickRelease) {
-                const chargeRatio = Math.min(this.input.kickChargeTime / 1000, 1);
+                const chargeRatio = Math.min(this.input.kickChargeTime / 1500, 1);
+                this.hitNearbyPlayers(this.humanPlayer, chargeRatio);
                 if (this.humanPlayer.kick(this.ball, chargeRatio)) {
                     this.stats.shots.red++;
                     const shakeIntensity = 0.15 + chargeRatio * 0.85;
@@ -524,17 +523,8 @@ class Game {
                     Sound.kick(chargeRatio);
                     if (this.ball.vx > 0) this.addMomentum('red');
                 }
-                if (chargeRatio > 0.5) {
-                    this.hitNearbyPlayers(this.humanPlayer);
-                }
                 this.input.kickRelease = false;
                 this.input.kickChargeTime = 0;
-            }
-
-            if (this.input.tackle) {
-                this.humanPlayer.tackle(this.ball);
-                Sound.tackle();
-                this.input.tackle = false;
             }
 
             if (this.input.switchPlayer) {
@@ -551,8 +541,8 @@ class Game {
             this.remoteHumanPlayer.applyInput(this.remoteInput.x, this.remoteInput.y);
 
             if (this.remoteInput.kickCharging) {
-                this.remoteHumanPlayer.kickChargeRatio = Math.min(this.remoteInput.kickChargeTime / 1000, 1);
-                const slowFactor = 1 - this.remoteHumanPlayer.kickChargeRatio * 0.12;
+                this.remoteHumanPlayer.kickChargeRatio = Math.min(this.remoteInput.kickChargeTime / 1500, 1);
+                const slowFactor = 1 - this.remoteHumanPlayer.kickChargeRatio * 0.04;
                 this.remoteHumanPlayer.vx *= Math.pow(slowFactor, Physics.dtRatio);
                 this.remoteHumanPlayer.vy *= Math.pow(slowFactor, Physics.dtRatio);
             } else {
@@ -560,7 +550,8 @@ class Game {
             }
 
             if (this.remoteInput.kickRelease) {
-                const chargeRatio = Math.min(this.remoteInput.kickChargeTime / 1000, 1);
+                const chargeRatio = Math.min(this.remoteInput.kickChargeTime / 1500, 1);
+                this.hitNearbyPlayers(this.remoteHumanPlayer, chargeRatio);
                 if (this.remoteHumanPlayer.kick(this.ball, chargeRatio)) {
                     this.stats.shots.blue++;
                     this.renderer.triggerShake(0.15 + chargeRatio * 0.85);
@@ -568,14 +559,8 @@ class Game {
                     Sound.kick(chargeRatio);
                     if (this.ball.vx < 0) this.addMomentum('blue');
                 }
-                if (chargeRatio > 0.5) this.hitNearbyPlayers(this.remoteHumanPlayer);
                 this.remoteInput.kickRelease = false;
                 this.remoteInput.kickChargeTime = 0;
-            }
-
-            if (this.remoteInput.tackle) {
-                this.remoteHumanPlayer.tackle(this.ball);
-                this.remoteInput.tackle = false;
             }
 
             if (this.remoteInput.switchPlayer) {
@@ -591,8 +576,8 @@ class Game {
             this.humanPlayer2.applyInput(this.input2.x, this.input2.y);
 
             if (this.input2.kickCharging) {
-                this.humanPlayer2.kickChargeRatio = Math.min((performance.now() - this.input2.kickChargeStart) / 1000, 1);
-                const slowFactor = 1 - this.humanPlayer2.kickChargeRatio * 0.12;
+                this.humanPlayer2.kickChargeRatio = Math.min((performance.now() - this.input2.kickChargeStart) / 1500, 1);
+                const slowFactor = 1 - this.humanPlayer2.kickChargeRatio * 0.04;
                 this.humanPlayer2.vx *= Math.pow(slowFactor, Physics.dtRatio);
                 this.humanPlayer2.vy *= Math.pow(slowFactor, Physics.dtRatio);
             } else {
@@ -600,7 +585,8 @@ class Game {
             }
 
             if (this.input2.kickRelease) {
-                const chargeRatio = Math.min(this.input2.kickChargeTime / 1000, 1);
+                const chargeRatio = Math.min(this.input2.kickChargeTime / 1500, 1);
+                this.hitNearbyPlayers(this.humanPlayer2, chargeRatio);
                 if (this.humanPlayer2.kick(this.ball, chargeRatio)) {
                     this.stats.shots.blue++;
                     this.renderer.triggerShake(0.15 + chargeRatio * 0.85);
@@ -608,14 +594,8 @@ class Game {
                     Sound.kick(chargeRatio);
                     if (this.ball.vx < 0) this.addMomentum('blue');
                 }
-                if (chargeRatio > 0.5) this.hitNearbyPlayers(this.humanPlayer2);
                 this.input2.kickRelease = false;
                 this.input2.kickChargeTime = 0;
-            }
-
-            if (this.input2.tackle) {
-                this.humanPlayer2.tackle(this.ball);
-                this.input2.tackle = false;
             }
 
             if (this.input2.switchPlayer) {
@@ -638,6 +618,7 @@ class Game {
 
             if (action.kick) {
                 const cr = action.chargeRatio || 0.3;
+                this.hitNearbyPlayers(player, cr);
                 if (player.kick(this.ball, cr)) {
                     this.stats.shots[player.team]++;
                     const shakeIntensity = 0.15 + cr * 0.55;
@@ -647,10 +628,6 @@ class Game {
                     const towardGoal = (player.team === 'red' && this.ball.vx > 0) || (player.team === 'blue' && this.ball.vx < 0);
                     if (towardGoal) this.addMomentum(player.team);
                 }
-                if (cr > 0.5) this.hitNearbyPlayers(player);
-            }
-            if (action.tackle) {
-                player.tackle(this.ball);
             }
         }
 
@@ -702,11 +679,27 @@ class Game {
 
         // Player-ball collisions
         for (const p of this.players) {
+            // Dribble: when player is close to ball and moving, gently guide ball along
+            const dribbleDist = Physics.distance(p, this.ball);
+            const dribbleRange = p.radius + this.ball.radius + 6;
+            if (dribbleDist < dribbleRange && dribbleDist > 0 && p.stunTimer <= 0) {
+                const playerSpeed = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+                if (playerSpeed > 0.8) {
+                    // Soft nudge scaled by proximity — closer = stronger
+                    const proximity = 1 - (dribbleDist / dribbleRange);
+                    const strength = 0.04 * proximity * Physics.dtRatio;
+                    this.ball.vx += p.vx * strength;
+                    this.ball.vy += p.vy * strength;
+                }
+            }
+
             const collided = Physics.resolveCircleCollision(p, this.ball, Physics.PLAYER_BOUNCE, Physics.BALL_BOUNCE);
 
-            // Clear kickoff restriction when kickoff team touches the ball
-            if (collided && this.kickoffActive && p.team === this.kickoffTeam) {
-                this.kickoffActive = false;
+            // Clear kickoff restriction when kickoff team touches or kicks the ball
+            if (this.kickoffActive && p.team === this.kickoffTeam) {
+                if (collided || this.ball.lastKickedBy === p) {
+                    this.kickoffActive = false;
+                }
             }
 
             // Hit flash + sound on collision
@@ -753,7 +746,6 @@ class Game {
                 this.renderer.triggerShake(shakeIntensity);
                 this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.3 + cr * 0.7);
                 Sound.kick(cr);
-                if (cr > 0.5) this.hitNearbyPlayers(p);
                 this.input.kickCharging = false;
                 this.input.kickRelease = false;
                 this.input.kickChargeTime = 0;
@@ -769,7 +761,6 @@ class Game {
                 this.renderer.triggerShake(shakeIntensity);
                 this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.3 + cr * 0.7);
                 Sound.kick(cr);
-                if (cr > 0.5) this.hitNearbyPlayers(p);
                 this.input2.kickCharging = false;
                 this.input2.kickRelease = false;
                 this.input2.kickChargeTime = 0;
@@ -785,52 +776,37 @@ class Game {
                 this.renderer.triggerShake(shakeIntensity);
                 this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.3 + cr * 0.7);
                 Sound.kick(cr);
-                if (cr > 0.5) this.hitNearbyPlayers(p);
                 this.remoteInput.kickCharging = false;
                 this.remoteInput.kickRelease = false;
                 this.remoteInput.kickChargeTime = 0;
                 p.kickChargeRatio = 0;
             }
 
-            // Tackle: extra force on ball in tackle direction
-            // SAFETY: prevent tackle from sending ball toward own goal
-            if (collided && p.isTackling) {
-                let tForceX = p.tackleDirX * Physics.KICK_FORCE * 0.8;
-                let tForceY = p.tackleDirY * Physics.KICK_FORCE * 0.8;
-
-                // Check if tackle force would send ball toward own goal
-                const ownGoalX = p.team === 'red' ? this.field.x : this.field.x + this.field.width;
-                const resultVx = this.ball.vx + tForceX;
-                const towardOwnGoal = p.team === 'red' ? resultVx < -1 : resultVx > 1;
-                const nearOwnGoal = Math.abs(this.ball.x - ownGoalX) < this.field.width * 0.35;
-
-                if (towardOwnGoal && nearOwnGoal) {
-                    // Redirect tackle force sideways/away from own goal instead
-                    const awayX = p.team === 'red' ? 1 : -1;
-                    tForceX = Math.abs(tForceX) * awayX;
-                }
-
-                this.ball.vx += tForceX;
-                this.ball.vy += tForceY;
-                this.ball.lastKickedBy = p;
-                this.addMomentum(p.team);
-            }
-
-            // Fire ball hits any player: knock them back and stun
-            if (collided && this.ball.superKick > 0 && p !== this.ball.lastKickedBy) {
+            // Power kick ball hits any player: knock them back and stun based on speed
+            if (collided && this.ball.lastKickedBy && p !== this.ball.lastKickedBy) {
                 const ballSpeed = Math.sqrt(this.ball.vx * this.ball.vx + this.ball.vy * this.ball.vy);
-                // Stun duration scales with impact speed (600-1200ms)
-                p.stunTimer = 600 + (ballSpeed / Physics.MAX_BALL_SPEED) * 600;
-                // Smooth knockback: add to existing velocity for natural feel
-                if (ballSpeed > 0.5) {
-                    const knockbackForce = 3 + (ballSpeed / Physics.MAX_BALL_SPEED) * 8;
+                const speedRatio = ballSpeed / Physics.MAX_BALL_SPEED;
+                if (this.ball.superKick > 0) {
+                    // Fire ball: heavy stun and knockback
+                    p.stunTimer = 600 + speedRatio * 600;
+                    if (ballSpeed > 0.5) {
+                        const knockbackForce = 3 + speedRatio * 8;
+                        const nx = this.ball.vx / ballSpeed;
+                        const ny = this.ball.vy / ballSpeed;
+                        p.vx += nx * knockbackForce;
+                        p.vy += ny * knockbackForce;
+                    }
+                    this.renderer.spawnHitFlash(p.x, p.y, 0.8);
+                } else if (ballSpeed > 8) {
+                    // Fast regular kick: lighter stun and knockback
+                    p.stunTimer = 200 + speedRatio * 400;
+                    const knockbackForce = 1.5 + speedRatio * 4;
                     const nx = this.ball.vx / ballSpeed;
                     const ny = this.ball.vy / ballSpeed;
                     p.vx += nx * knockbackForce;
                     p.vy += ny * knockbackForce;
+                    this.renderer.spawnHitFlash(p.x, p.y, 0.5);
                 }
-                // Spawn visual impact
-                this.renderer.spawnHitFlash(p.x, p.y, 0.8);
             }
         }
 
@@ -929,25 +905,6 @@ class Game {
         // Online: host sends state to guest
         if (this.isOnline && this.isHost && this.network) {
             this.network.sendState(this);
-        }
-    }
-
-    hitNearbyPlayers(kicker) {
-        for (const p of this.players) {
-            if (p === kicker || p.stunTimer > 0) continue;
-            const dist = Physics.distance(kicker, p);
-            const touchRange = kicker.radius + p.radius + 20;
-            if (dist > touchRange) continue;
-
-            const dx = p.x - kicker.x;
-            const dy = p.y - kicker.y;
-            const n = Physics.normalize(dx, dy);
-            // Add knockback to existing velocity for smoother feel
-            p.vx += n.x * 6;
-            p.vy += n.y * 6;
-            p.stunTimer = 700;
-            this.renderer.spawnHitFlash(p.x, p.y, 0.6);
-            Sound.stun();
         }
     }
 
@@ -1071,6 +1028,25 @@ class Game {
         resultOverlay.classList.remove('hidden');
     }
 
+    hitNearbyPlayers(kicker, chargeRatio) {
+        if (chargeRatio < 0.50) return;
+        const hitRange = kicker.radius + 40;
+        const knockForce = 2.0 + chargeRatio * 3.0;
+        for (const p of this.players) {
+            if (p === kicker || p.team === kicker.team) continue;
+            const dist = Physics.distance(kicker, p);
+            if (dist < hitRange && dist > 0) {
+                const dx = p.x - kicker.x;
+                const dy = p.y - kicker.y;
+                const n = Physics.normalize(dx, dy);
+                p.vx += n.x * knockForce;
+                p.vy += n.y * knockForce;
+                p.stunTimer = 300 + chargeRatio * 700;
+                this.renderer.spawnHitFlash(p.x, p.y, 0.4);
+            }
+        }
+    }
+
     addMomentum(team, amount = 1) {
         this.momentum[team] = Math.min(this.momentum.max, this.momentum[team] + amount);
     }
@@ -1120,7 +1096,7 @@ class Game {
 
         if (nearest) {
             this.remoteHumanPlayer.isHuman = false;
-            this.aiControllers.push({ player: this.remoteHumanPlayer, ai: new AIController(this.settings.difficulty || 'medium') });
+            this.aiControllers.push({ player: this.remoteHumanPlayer, ai: new AIController(this.settings.difficulty || 'normal') });
             nearest.isHuman = true;
             this.aiControllers = this.aiControllers.filter(c => c.player !== nearest);
             this.remoteHumanPlayer = nearest;
@@ -1143,7 +1119,7 @@ class Game {
 
         if (nearest) {
             this.humanPlayer2.isHuman = false;
-            this.aiControllers.push({ player: this.humanPlayer2, ai: new AIController(this.settings.difficulty || 'medium') });
+            this.aiControllers.push({ player: this.humanPlayer2, ai: new AIController(this.settings.difficulty || 'normal') });
             nearest.isHuman = true;
             this.aiControllers = this.aiControllers.filter(c => c.player !== nearest);
             this.humanPlayer2 = nearest;
@@ -1168,9 +1144,6 @@ class Game {
         for (const p of this.players) {
             const isControlled = (p === this.humanPlayer) || (p === this.humanPlayer2);
             this.renderer.drawPlayer(p, isControlled);
-            if (isControlled) {
-                this.renderer.drawDashCooldown(p);
-            }
         }
 
         // Ball

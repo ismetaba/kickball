@@ -239,7 +239,6 @@ class LearningAI {
 
         return {
             kick: doKick,
-            tackle: false,
             chargeRatio: kickCharge
         };
     }
@@ -528,7 +527,6 @@ class ChaserAI {
         const kickTowardGoal = (player.team === 'red') ? kickDirX > 0 : kickDirX < 0;
         return {
             kick: dist < kickRange && kickTowardGoal,
-            tackle: false,
             chargeRatio: 0.4
         };
     }
@@ -553,7 +551,6 @@ class RandomAI {
         player.applyInput(this._mx * 0.4 + bx, this._my * 0.4 + by);
         return {
             kick: dist < player.radius + ball.radius + 12 && Math.random() < 0.7,
-            tackle: false,
             chargeRatio: Math.random() * 0.5
         };
     }
@@ -580,7 +577,6 @@ class DefenderAI {
         const kickAway = (player.team === 'red') ? kickDirX > 0 : kickDirX < 0;
         return {
             kick: ballDist < kickRange && kickAway,
-            tackle: false,
             chargeRatio: 0.5
         };
     }
@@ -612,8 +608,8 @@ class EvolutionTrainer {
             new ChaserAI(),
             new RandomAI(),
             new DefenderAI(),
-            new AIController('easy'),
-            new AIController('medium'),
+            new AIController('normal'),
+            new AIController('expert'),
         ];
 
         // Hall of fame: past best agents to prevent forgetting
