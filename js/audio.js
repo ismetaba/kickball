@@ -522,6 +522,86 @@ class SoundManager {
         this._tone('sine', 1400, t + 0.025, 0.03, 0.04, 0.001, 0.015, 0);
     }
 
+    comboSound(level) {
+        if (!this.ctx) return;
+        const t = this._now();
+        // Ascending chime notes — more notes for higher combos
+        const notes = [523, 659, 784, 1047, 1319, 1568];
+        const count = Math.min(level + 1, notes.length);
+        for (let i = 0; i < count; i++) {
+            this._tone('sine', notes[i], t + i * 0.07, 0.15, 0.08 + level * 0.02, 0.003, 0.05, 0.02);
+            if (level >= 3) {
+                this._tone('sine', notes[i] * 2, t + i * 0.07, 0.1, 0.03, 0.002, 0.04, 0);
+            }
+        }
+        if (level >= 2) this._noiseBurst('highpass', 5000, 2, t + count * 0.07, 0.3, 0.04);
+        if (level >= 4) {
+            // Legendary: crowd roar
+            const crowd = this.ctx.createBufferSource();
+            crowd.buffer = this._pinkBuffer;
+            const cg = this.ctx.createGain();
+            cg.gain.setValueAtTime(0.0001, t);
+            cg.gain.linearRampToValueAtTime(0.06, t + 0.2);
+            cg.gain.linearRampToValueAtTime(0.0001, t + 1.2);
+            const cf = this.ctx.createBiquadFilter();
+            cf.type = 'bandpass'; cf.frequency.value = 1200; cf.Q.value = 0.5;
+            crowd.connect(cf); cf.connect(cg); cg.connect(this.sfxGain);
+            crowd.start(t); crowd.stop(t + 1.3);
+        }
+    }
+
+    fireGoal(level) {
+        if (!this.ctx) return;
+        this.goal();
+        const t = this._now();
+        // Extra bass boom for fire goals
+        this._sweep('sine', 60, 20, t, 0.5, 0.25);
+        // Extra sparkle
+        this._noiseBurst('highpass', 4000, 3, t + 0.1, 0.5, 0.05);
+        if (level >= 2) {
+            // Inferno: distorted low sweep + power chord
+            this._sweep('square', 100, 30, t, 0.3, 0.08);
+            this._tone('sine', 1568, t + 0.2, 0.4, 0.06, 0.003, 0.1, 0.02);
+            this._tone('sine', 2093, t + 0.25, 0.35, 0.05, 0.003, 0.1, 0.01);
+        }
+    }
+
+    fireBallPierce() {
+        if (!this.ctx) return;
+        const t = this._now();
+        // Dramatic whoosh
+        this._noiseSwoop('bandpass', 2000, 500, 3, t, 0.15, 0.12);
+        // Impact thud
+        this._sweep('sine', 200, 60, t, 0.08, 0.1);
+        // Rising pass-through tone
+        this._sweep('sine', 400, 1200, t + 0.02, 0.1, 0.06);
+    }
+
+    pullActivate() {
+        if (!this.ctx) return;
+        const t = this._now();
+        // Magical whoosh inward
+        this._noiseSwoop('bandpass', 3000, 800, 3, t, 0.2, 0.08);
+        // Rising magical tone
+        this._sweep('sine', 400, 800, t, 0.15, 0.06);
+        this._tone('sine', 1200, t + 0.1, 0.1, 0.04, 0.002, 0.05, 0);
+    }
+
+    suddenDeathStart() {
+        if (!this.ctx) return;
+        const t = this._now();
+        // Deep bass rumble
+        this._sweep('sine', 60, 25, t, 1.0, 0.15);
+        // Alarm tones — two detuned descending
+        this._sweep('square', 440, 220, t + 0.2, 0.4, 0.06);
+        this._sweep('square', 445, 222, t + 0.2, 0.4, 0.05);
+        // Rising tension noise
+        this._noiseSwoop('bandpass', 500, 3000, 2, t + 0.5, 0.5, 0.08);
+        // Sharp stinger
+        this._tone('sine', 880, t + 1.0, 0.15, 0.12, 0.003, 0.05, 0.04);
+        this._tone('sine', 1320, t + 1.05, 0.15, 0.1, 0.003, 0.05, 0.03);
+    }
+
     /* ════════════════════════════════════════════
        BACKGROUND MUSIC — Procedural electronic loop
        ════════════════════════════════════════════ */

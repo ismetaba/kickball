@@ -32,12 +32,18 @@ class Game {
         this.lastTime = 0;
         this.matchOver = false;
 
-        this.input = { x: 0, y: 0, kick: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
-        this.input2 = { x: 0, y: 0, kick: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
+        this.input = { x: 0, y: 0, kick: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false, pull: false };
+        this.input2 = { x: 0, y: 0, kick: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false, pull: false };
         this.timeScale = 1.0;
         this.slowMoTimer = 0;
         this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
         this._lastCountdownSec = -1;
+        this.combo = { team: null, count: 0 };
+        this.suddenDeath = false;
+        this.suddenDeathTimer = 0;
+        this.suddenDeathMaxTime = 60000;
+        this.suddenDeathShrink = 0;
+        this._originalMaxBallSpeed = Physics.MAX_BALL_SPEED;
 
         // Local 1v1
         this.isLocal1v1 = false;
@@ -129,6 +135,30 @@ class Game {
         return positions;
     }
 
+    applyMapPhysics() {
+        // Store base physics values (only once)
+        if (!this._basePhysics) {
+            this._basePhysics = {
+                BALL_FRICTION: Physics.BALL_FRICTION,
+                WALL_BOUNCE: Physics.WALL_BOUNCE,
+                FRICTION: Physics.FRICTION,
+            };
+        }
+        // Apply map modifiers
+        const f = this.field;
+        Physics.BALL_FRICTION = 1 - (1 - this._basePhysics.BALL_FRICTION) * f.frictionMod;
+        Physics.WALL_BOUNCE = this._basePhysics.WALL_BOUNCE * f.bounceMod;
+        Physics.FRICTION = 1 - (1 - this._basePhysics.FRICTION) * f.playerFrictionMod;
+    }
+
+    resetMapPhysics() {
+        if (this._basePhysics) {
+            Physics.BALL_FRICTION = this._basePhysics.BALL_FRICTION;
+            Physics.WALL_BOUNCE = this._basePhysics.WALL_BOUNCE;
+            Physics.FRICTION = this._basePhysics.FRICTION;
+        }
+    }
+
     startMatch() {
         this.renderer.resize();
         this.field = new Field(this.renderer.w, this.renderer.h, this.settings.map);
@@ -181,7 +211,13 @@ class Game {
         this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
         this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
         this.timeScale = 1.0;
+        this.combo = { team: null, count: 0 };
+        this.suddenDeath = false;
+        this.suddenDeathTimer = 0;
+        this.suddenDeathShrink = 0;
+        Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
 
+        this.applyMapPhysics();
         this.lastTime = performance.now();
         Sound.whistle(false);
         Sound.startMusic();
@@ -242,7 +278,13 @@ class Game {
         this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
         this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
         this.timeScale = 1.0;
+        this.combo = { team: null, count: 0 };
+        this.suddenDeath = false;
+        this.suddenDeathTimer = 0;
+        this.suddenDeathShrink = 0;
+        Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
 
+        this.applyMapPhysics();
         this.lastTime = performance.now();
         Sound.whistle(false);
         Sound.startMusic();
@@ -278,7 +320,13 @@ class Game {
         this.kickoffActive = false;
         this.practiceMode = true;
         this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
+        this.combo = { team: null, count: 0 };
+        this.suddenDeath = false;
+        this.suddenDeathTimer = 0;
+        this.suddenDeathShrink = 0;
+        Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
 
+        this.applyMapPhysics();
         this.lastTime = performance.now();
         Sound.whistle(false);
         Sound.startMusic();
@@ -372,7 +420,13 @@ class Game {
         this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
         this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
         this.timeScale = 1.0;
+        this.combo = { team: null, count: 0 };
+        this.suddenDeath = false;
+        this.suddenDeathTimer = 0;
+        this.suddenDeathShrink = 0;
+        Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
 
+        this.applyMapPhysics();
         this.lastTime = performance.now();
         Sound.whistle(false);
         Sound.startMusic();
@@ -465,23 +519,60 @@ class Game {
 
         // Timer (skip in practice mode) - use raw dt so timer isn't affected by slow-mo
         if (!this.practiceMode) {
-            this.timeRemaining -= rawDt;
-            if (this.timeRemaining <= 0) {
-                this.timeRemaining = 0;
-                this.endMatch();
-                return;
-            }
+            if (this.suddenDeath) {
+                // Sudden death timer
+                this.suddenDeathTimer += rawDt;
+                this.suddenDeathShrink = Math.min(this.suddenDeathTimer / this.suddenDeathMaxTime, 1);
 
-            const secs = Math.ceil(this.timeRemaining / 1000);
-            const m = Math.floor(secs / 60);
-            const s = secs % 60;
-            this._dom.timer.textContent = `${m}:${s.toString().padStart(2, '0')}`;
+                // Gradually increase ball speed
+                Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed + this.suddenDeathShrink * 10;
 
-            // Countdown beeps in final seconds
-            if (secs <= 5 && secs !== this._lastCountdownSec) {
-                this._lastCountdownSec = secs;
-                if (secs === 1) Sound.countdownFinal();
-                else Sound.countdown();
+                // Update timer display
+                const secs = Math.ceil(this.suddenDeathTimer / 1000);
+                const m = Math.floor(secs / 60);
+                const s = secs % 60;
+                this._dom.timer.textContent = `${m}:${s.toString().padStart(2, '0')}`;
+                this._dom.timer.style.color = '#ff4444';
+
+                // Force end after max time
+                if (this.suddenDeathTimer >= this.suddenDeathMaxTime) {
+                    this.endMatch();
+                    return;
+                }
+            } else {
+                this.timeRemaining -= rawDt;
+                if (this.timeRemaining <= 0) {
+                    this.timeRemaining = 0;
+                    // Sudden death if tied
+                    if (this.redScore === this.blueScore && !this.practiceMode) {
+                        this.suddenDeath = true;
+                        this.suddenDeathTimer = 0;
+                        this.suddenDeathShrink = 0;
+                        Sound.suddenDeathStart();
+                        this.renderer.showSuddenDeath();
+                        // Reset positions for sudden death
+                        this.ball.reset();
+                        for (const p of this.players) p.reset();
+                        this.powerUpManager.reset();
+                    } else {
+                        this.endMatch();
+                        return;
+                    }
+                }
+
+                if (!this.suddenDeath) {
+                    const secs = Math.ceil(this.timeRemaining / 1000);
+                    const m = Math.floor(secs / 60);
+                    const s = secs % 60;
+                    this._dom.timer.textContent = `${m}:${s.toString().padStart(2, '0')}`;
+
+                    // Countdown beeps in final seconds
+                    if (secs <= 5 && secs !== this._lastCountdownSec) {
+                        this._lastCountdownSec = secs;
+                        if (secs === 1) Sound.countdownFinal();
+                        else Sound.countdown();
+                    }
+                }
             }
         }
 
@@ -673,12 +764,78 @@ class Game {
             }
         }
 
+        // Ball pull ability: active pull attracts ball to player (max range limited)
+        const pullMaxRange = 150; // Only works within 150px
+        for (const p of this.players) {
+            if (p.pullActive) {
+                const dist = Physics.distance(p, this.ball);
+                if (dist >= pullMaxRange) {
+                    // Out of range — cancel pull and start cooldown
+                    p.pullActive = false;
+                    p.pullCooldown = p.pullCooldownTime;
+                } else if (dist > p.radius + this.ball.radius + 5) {
+                    const dx = p.x - this.ball.x;
+                    const dy = p.y - this.ball.y;
+                    const n = Physics.normalize(dx, dy);
+                    // Pull force falls off with distance (stronger when closer)
+                    const falloff = 1 - (dist / pullMaxRange);
+                    const pullStrength = 0.25 * falloff * Physics.dtRatio;
+                    this.ball.vx += n.x * pullStrength;
+                    this.ball.vy += n.y * pullStrength;
+                    // Slow the ball while pulling (creates a "catching" feel)
+                    this.ball.vx *= Math.pow(0.985, Physics.dtRatio);
+                    this.ball.vy *= Math.pow(0.985, Physics.dtRatio);
+                }
+            }
+        }
+
+        // Handle pull input for human player (must be in range)
+        if (this.humanPlayer && this.input.pull && !this.humanPlayer.pullActive && this.humanPlayer.pullCooldown <= 0
+            && Physics.distance(this.humanPlayer, this.ball) < pullMaxRange) {
+            this.humanPlayer.activatePull();
+            Sound.pullActivate();
+        }
+        if (this.humanPlayer && !this.input.pull && this.humanPlayer.pullActive) {
+            // Released pull early — end it and start cooldown
+            this.humanPlayer.pullActive = false;
+            this.humanPlayer.pullDuration = 0;
+            this.humanPlayer.pullCooldown = this.humanPlayer.pullCooldownTime;
+        }
+
+        // P2 pull (local 1v1, must be in range)
+        if (this.isLocal1v1 && this.humanPlayer2 && this.input2.pull && !this.humanPlayer2.pullActive && this.humanPlayer2.pullCooldown <= 0
+            && Physics.distance(this.humanPlayer2, this.ball) < pullMaxRange) {
+            this.humanPlayer2.activatePull();
+        }
+        if (this.isLocal1v1 && this.humanPlayer2 && !this.input2.pull && this.humanPlayer2.pullActive) {
+            this.humanPlayer2.pullActive = false;
+            this.humanPlayer2.pullDuration = 0;
+            this.humanPlayer2.pullCooldown = this.humanPlayer2.pullCooldownTime;
+        }
+
         // Update entities
         for (const p of this.players) p.update(dt);
         this.ball.update(dt);
 
         // Player-ball collisions
         for (const p of this.players) {
+            // Fire ball piercing: skip collision with opponents, stun them instead
+            if (this.ball.fireLevel > 0 && this.ball.lastKickedBy && p.team !== this.ball.lastKickedBy.team) {
+                const dist = Physics.distance(p, this.ball);
+                if (dist < p.radius + this.ball.radius && p.stunTimer <= 0) {
+                    // Pierce through: stun player, slow ball slightly
+                    p.stunTimer = 600;
+                    const knockDir = Physics.normalize(p.x - this.ball.x, p.y - this.ball.y);
+                    p.vx = knockDir.x * 4;
+                    p.vy = knockDir.y * 4;
+                    this.ball.vx *= 0.9;
+                    this.ball.vy *= 0.9;
+                    Sound.fireBallPierce();
+                    this.renderer.spawnFireImpact(p.x, p.y, this.ball.fireLevel);
+                    continue;
+                }
+            }
+
             const collided = Physics.resolveCircleCollision(p, this.ball, Physics.PLAYER_BOUNCE, Physics.BALL_BOUNCE);
 
             // Clear kickoff restriction when kickoff team touches or kicks the ball
@@ -789,48 +946,94 @@ class Game {
             }
         }
 
-        // Constrain to field
-        for (const p of this.players) {
-            Physics.constrainToField(p, this.field, true);
+        // Sudden death: shrink field walls
+        if (this.suddenDeath && this.suddenDeathShrink > 0) {
+            const maxShrink = 0.15; // Shrink up to 15% on each side
+            const s = this.suddenDeathShrink * maxShrink;
+            const shrinkX = this.field.width * s;
+            const shrinkY = this.field.height * s;
+            // Temporarily adjust field for constraint, then restore
+            const origX = this.field.x, origY = this.field.y, origW = this.field.width, origH = this.field.height;
+            this.field.x += shrinkX;
+            this.field.y += shrinkY;
+            this.field.width -= shrinkX * 2;
+            this.field.height -= shrinkY * 2;
+            for (const p of this.players) Physics.constrainToField(p, this.field, true);
+            this.field.x = origX; this.field.y = origY;
+            this.field.width = origW; this.field.height = origH;
+        } else {
+            for (const p of this.players) Physics.constrainToField(p, this.field, true);
         }
 
-        // Kickoff restriction: scoring team can't cross center line or enter center circle
+        // Kickoff restriction:
+        // Both teams: blocked at center line
+        // Scoring team: also can't enter center circle
         if (this.kickoffActive && this.kickoffTeam) {
-            const restrictedTeam = this.kickoffTeam === 'red' ? 'blue' : 'red';
             const centerX = this.field.centerX;
             const centerY = this.field.centerY;
             const circleR = this.field.centerRadius;
+            const scoringTeam = this.kickoffTeam === 'red' ? 'blue' : 'red';
             for (const p of this.players) {
-                if (p.team !== restrictedTeam) continue;
-
-                // Block from crossing center line
-                if (restrictedTeam === 'red') {
-                    if (p.x + p.radius > centerX) {
-                        p.x = centerX - p.radius;
-                        if (p.vx > 0) p.vx = 0;
-                    }
-                } else {
-                    if (p.x - p.radius < centerX) {
-                        p.x = centerX + p.radius;
-                        if (p.vx < 0) p.vx = 0;
-                    }
-                }
-
-                // Block from entering center circle
                 const dx = p.x - centerX;
                 const dy = p.y - centerY;
                 const dist = Math.sqrt(dx * dx + dy * dy);
-                const minDist = circleR + p.radius;
-                if (dist < minDist && dist > 0) {
-                    const nx = dx / dist;
-                    const ny = dy / dist;
-                    p.x = centerX + nx * minDist;
-                    p.y = centerY + ny * minDist;
-                    // Kill velocity toward center
-                    const dot = p.vx * nx + p.vy * ny;
-                    if (dot < 0) {
-                        p.vx -= dot * nx;
-                        p.vy -= dot * ny;
+                const insideCircle = dist < circleR;
+
+                if (p.team === scoringTeam) {
+                    // Scoring team: blocked at center line
+                    if (scoringTeam === 'red') {
+                        if (p.x + p.radius > centerX) {
+                            p.x = centerX - p.radius;
+                            if (p.vx > 0) p.vx = 0;
+                        }
+                    } else {
+                        if (p.x - p.radius < centerX) {
+                            p.x = centerX + p.radius;
+                            if (p.vx < 0) p.vx = 0;
+                        }
+                    }
+                    // Scoring team: can't enter center circle
+                    const minDist = circleR + p.radius;
+                    if (dist < minDist && dist > 0) {
+                        const nx = dx / dist;
+                        const ny = dy / dist;
+                        p.x = centerX + nx * minDist;
+                        p.y = centerY + ny * minDist;
+                        const dot = p.vx * nx + p.vy * ny;
+                        if (dot < 0) {
+                            p.vx -= dot * nx;
+                            p.vy -= dot * ny;
+                        }
+                    }
+                } else {
+                    // Scored-on team: center line + circle barrier
+                    // Center-based circle check, center-based containment = small corrections
+                    const onOppSide = (p.team === 'red' && p.x + p.radius > centerX) ||
+                                       (p.team === 'blue' && p.x - p.radius < centerX);
+                    if (onOppSide) {
+                        if (insideCircle) {
+                            // Center is inside circle: contain center within circle
+                            if (dist > circleR - 1 && dist > 0) {
+                                const nx = dx / dist;
+                                const ny = dy / dist;
+                                p.x = centerX + nx * (circleR - 1);
+                                p.y = centerY + ny * (circleR - 1);
+                                const dot = p.vx * nx + p.vy * ny;
+                                if (dot > 0) {
+                                    p.vx -= dot * nx;
+                                    p.vy -= dot * ny;
+                                }
+                            }
+                        } else {
+                            // Center is outside circle: clamp to center line
+                            if (p.team === 'red') {
+                                p.x = centerX - p.radius;
+                                if (p.vx > 0) p.vx = 0;
+                            } else {
+                                p.x = centerX + p.radius;
+                                if (p.vx < 0) p.vx = 0;
+                            }
+                        }
                     }
                 }
             }
@@ -839,6 +1042,10 @@ class Game {
         if (wallHit) {
             const spd = Math.sqrt(this.ball.vx * this.ball.vx + this.ball.vy * this.ball.vy);
             Sound.wallBounce(spd);
+            // Fire upgrade: wall bounce while on fire at high speed → blue fire
+            if (this.ball.fireLevel === 1 && spd > 6) {
+                this.ball.ignite(2);
+            }
         }
 
         // Track possession
@@ -852,7 +1059,7 @@ class Game {
         else this.stats.possession.blue += dt;
 
         // Power-ups
-        const collected = this.powerUpManager.update(dt, this.players);
+        const collected = this.powerUpManager.update(dt, this.players, this.suddenDeath);
         if (collected) {
             const notif = document.getElementById('powerup-notification');
             notif.querySelector('.powerup-text').textContent = collected.type.label;
@@ -877,11 +1084,15 @@ class Game {
     }
 
     scoreGoal(team) {
+        // Fire ball scoring: 2x for level 1, 3x for level 2
+        const fireLevel = this.ball.fireLevel || 0;
+        const goalPoints = fireLevel >= 2 ? 3 : fireLevel >= 1 ? 2 : 1;
+
         if (team === 'red') {
-            this.redScore++;
+            this.redScore += goalPoints;
             document.getElementById('red-score').textContent = this.redScore;
         } else {
-            this.blueScore++;
+            this.blueScore += goalPoints;
             document.getElementById('blue-score').textContent = this.blueScore;
         }
 
@@ -889,36 +1100,60 @@ class Game {
         const scorer = this.ball.lastKickedBy;
         const isOwnGoal = scorer && scorer.team !== team;
         if (scorer && !isOwnGoal) {
-            scorer.goals++;
+            scorer.goals += goalPoints;
+        }
+
+        // Combo tracking
+        if (team === this.combo.team) {
+            this.combo.count++;
+        } else {
+            this.combo = { team: team, count: 1 };
+        }
+
+        // Combo effects
+        const comboNames = ['', '', 'DOUBLE!', 'HAT TRICK!', 'UNSTOPPABLE!', 'LEGENDARY!'];
+        if (this.combo.count >= 2) {
+            const comboLevel = Math.min(this.combo.count, 5);
+            const comboText = comboNames[comboLevel] || 'LEGENDARY!';
+            this.renderer.showComboPopup(comboText, team);
+            Sound.comboSound(comboLevel - 1);
         }
 
         // Show notification
         const notif = document.getElementById('goal-notification');
-        notif.querySelector('.goal-text').textContent = isOwnGoal ? 'OWN GOAL!' : 'GOAL!';
+        let goalText = isOwnGoal ? 'OWN GOAL!' : 'GOAL!';
+        if (fireLevel >= 2) goalText = 'INFERNO GOAL!!!';
+        else if (fireLevel >= 1) goalText = 'FIRE GOAL!';
+        notif.querySelector('.goal-text').textContent = goalText;
         notif.querySelector('.goal-scorer').textContent =
-            scorer ? `${scorer.team.toUpperCase()} Team` : '';
+            scorer ? `${scorer.team.toUpperCase()} Team${goalPoints > 1 ? ' (+' + goalPoints + ')' : ''}` : '';
         notif.classList.remove('hidden');
 
         this.isGoalScored = true;
         this.goalTimer = 2500;
 
         // Set kickoff team: the team that was scored ON gets the kickoff
-        // 'team' is who scored, so the other team gets the kickoff
         this.kickoffTeam = team === 'red' ? 'blue' : 'red';
 
-        // Goal sound + heavy screen shake
-        Sound.goal();
-        this.renderer.triggerShake(1.0);
+        // Goal sound + heavy screen shake (bigger for fire goals)
+        if (fireLevel >= 1) {
+            Sound.fireGoal(fireLevel);
+            this.renderer.triggerShake(1.0);
+        } else {
+            Sound.goal();
+            this.renderer.triggerShake(1.0);
+        }
 
         // Slow-motion on goal (timer-based, not setTimeout)
         this.timeScale = 0.3;
-        this.slowMoTimer = 800;
+        this.slowMoTimer = fireLevel >= 1 ? 1200 : 800;
 
         // Momentum boost for scoring team
         this.addMomentum(team, 2);
 
-        // Confetti explosion
+        // Confetti explosion (double for fire goals)
         this.renderer.spawnConfetti(team);
+        if (fireLevel >= 1) this.renderer.spawnConfetti(team);
 
         // Net ripple: ball scored in left goal = blue scored, right goal = red scored
         const netSide = team === 'blue' ? 'left' : 'right';
@@ -927,6 +1162,12 @@ class Game {
         // Notify guest about goal
         if (this.isOnline && this.isHost && this.network) {
             this.network.send({ t: 'goal', d: { team: team } });
+        }
+
+        // Sudden death: first goal wins
+        if (this.suddenDeath) {
+            setTimeout(() => this.endMatch(), 2100);
+            return;
         }
 
         // Check goal limit
@@ -950,6 +1191,12 @@ class Game {
     endMatch() {
         this.isRunning = false;
         this.matchOver = true;
+        this.suddenDeath = false;
+        this.suddenDeathTimer = 0;
+        this.suddenDeathShrink = 0;
+        Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
+        this.resetMapPhysics();
+        if (this._dom && this._dom.timer) this._dom.timer.style.color = '';
         Sound.stopMusic();
         Sound.whistle(true);
 
@@ -1097,12 +1344,14 @@ class Game {
     render() {
         this.renderer.clear();
         this.renderer.trackedBall = this.ball;
+        this.renderer._currentMapType = this.field.mapType;
         this.renderer.drawField(this.field);
 
         // Kickoff barrier visual
         if (this.kickoffActive && this.kickoffTeam) {
-            const restrictedTeam = this.kickoffTeam === 'red' ? 'blue' : 'red';
-            this.renderer.drawKickoffBarrier(this.field, restrictedTeam);
+            const scoringTeam = this.kickoffTeam === 'red' ? 'blue' : 'red';
+            this.renderer.drawKickoffBarrier(this.field, scoringTeam);
+            this.renderer.drawKickoffBarrierLine(this.field, this.kickoffTeam);
         }
 
         // Power-ups
@@ -1114,14 +1363,64 @@ class Game {
             this.renderer.drawPlayer(p, isControlled);
         }
 
+        // Pull ability visual links (only when in range)
+        for (const p of this.players) {
+            if (p.pullActive) {
+                const dist = Physics.distance(p, this.ball);
+                if (dist < 150) {
+                    this.renderer.drawPullLink(p, this.ball, dist);
+                }
+            }
+        }
+
+        // Pull cooldown indicator for controlled players
+        if (this.humanPlayer) {
+            this.renderer.drawPullIndicator(this.humanPlayer);
+        }
+        if (this.humanPlayer2) {
+            this.renderer.drawPullIndicator(this.humanPlayer2);
+        }
+
         // Ball
         this.renderer.drawBall(this.ball);
 
         // Hit flash particles
         this.renderer.drawHitFlashes();
 
+        // Sudden death overlay
+        if (this.suddenDeath) {
+            this.renderer.drawSuddenDeathOverlay(this.field, this.suddenDeathShrink);
+        }
+
         // Confetti (on top of everything)
         this.renderer.drawConfetti();
+
+        // Combo popup
+        this.renderer.drawComboPopup();
+
+        // Sudden death label
+        if (this.suddenDeath) {
+            this.renderer.drawSuddenDeathHUD();
+        }
+
+        // Update pull button visual state
+        const pullBtn = document.getElementById('btn-pull');
+        if (pullBtn && this.humanPlayer) {
+            const hp = this.humanPlayer;
+            if (hp.pullActive) {
+                pullBtn.classList.remove('on-cooldown');
+                pullBtn.style.opacity = '';
+                pullBtn.textContent = 'PULL';
+            } else if (hp.pullCooldown > 0) {
+                pullBtn.classList.add('on-cooldown');
+                const secs = Math.ceil(hp.pullCooldown / 1000);
+                pullBtn.textContent = secs + 's';
+            } else {
+                pullBtn.classList.remove('on-cooldown');
+                pullBtn.style.opacity = '';
+                pullBtn.textContent = 'PULL';
+            }
+        }
 
         // End frame (restore screen shake transform)
         this.renderer.endFrame();
@@ -1151,6 +1450,7 @@ class Game {
     quit() {
         this.isRunning = false;
         this.isLocal1v1 = false;
+        this.resetMapPhysics();
         Sound.stopMusic();
         this.humanPlayer2 = null;
         if (this.isOnline && this.network) {

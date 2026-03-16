@@ -87,6 +87,24 @@ class Controls {
             switchBtn.style.transform = '';
         });
 
+        // Pull button (ball attract)
+        const pullBtn = document.getElementById('btn-pull');
+        if (pullBtn) {
+            pullBtn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                this.game.input.pull = true;
+                pullBtn.style.transform = 'scale(0.9)';
+            }, { passive: false });
+            pullBtn.addEventListener('touchend', (e) => {
+                this.game.input.pull = false;
+                pullBtn.style.transform = '';
+            });
+            pullBtn.addEventListener('touchcancel', (e) => {
+                this.game.input.pull = false;
+                pullBtn.style.transform = '';
+            });
+        }
+
         // Prevent scrolling/zooming
         document.addEventListener('touchmove', (e) => {
             if (e.target.closest('#game-screen')) {
@@ -132,9 +150,11 @@ class Controls {
             this.game.input.x = 0;
             this.game.input.y = 0;
             this.game.input.kickCharging = false;
+            this.game.input.pull = false;
             this.game.input2.x = 0;
             this.game.input2.y = 0;
             this.game.input2.kickCharging = false;
+            this.game.input2.pull = false;
             // Also reset joystick in case touchcancel was missed
             if (this.joystickActive) {
                 this.joystickActive = false;
@@ -169,6 +189,9 @@ class Controls {
             if (key === 'q') {
                 this.game.input.switchPlayer = true;
             }
+            if (key === 'e') {
+                this.game.input.pull = true;
+            }
 
             // --- Player 2: Arrow Keys + Enter/Numpad ---
             if (key === 'Enter') {
@@ -179,6 +202,9 @@ class Controls {
             }
             if (key === '.' || key === 'Numpad0') {
                 this.game.input2.switchPlayer = true;
+            }
+            if (key === 'Shift') {
+                this.game.input2.pull = true;
             }
 
             if (key === 'Escape') {
@@ -201,6 +227,14 @@ class Controls {
                     this.game.input.kickCharging = false;
                     this.game.input.kickRelease = true;
                 }
+            }
+            // P1 pull release
+            if (key === 'e') {
+                this.game.input.pull = false;
+            }
+            // P2 pull release
+            if (key === 'Shift') {
+                this.game.input2.pull = false;
             }
             // P2 kick release
             if (key === 'Enter') {

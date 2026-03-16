@@ -17,11 +17,14 @@ class PowerUpManager {
         ];
     }
 
-    update(dt, players) {
+    update(dt, players, suddenDeath) {
         if (!this.enabled) return null;
 
+        const interval = suddenDeath ? 5000 : this.spawnInterval;
+        const maxOnField = suddenDeath ? 4 : 2;
+
         this.spawnTimer += dt;
-        if (this.spawnTimer >= this.spawnInterval && this.powerUps.length < 2) {
+        if (this.spawnTimer >= interval && this.powerUps.length < maxOnField) {
             this.spawn();
             this.spawnTimer = 0;
         }

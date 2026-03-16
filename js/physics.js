@@ -7,11 +7,11 @@ const Physics = {
     WALL_BOUNCE: 0.5,
     PLAYER_BOUNCE: 0.5,
     BALL_BOUNCE: 0.35,
-    MAX_PLAYER_SPEED: 4.2,
+    MAX_PLAYER_SPEED: 4.8,
     MAX_BALL_SPEED: 30,
-    KICK_FORCE: 10,
-    POWER_KICK_FORCE: 16,
-    PLAYER_ACCELERATION: 0.16,
+    KICK_FORCE: 8,
+    POWER_KICK_FORCE: 13,
+    PLAYER_ACCELERATION: 0.18,
 
     distance(a, b) {
         const dx = a.x - b.x;

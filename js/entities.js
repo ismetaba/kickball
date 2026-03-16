@@ -22,6 +22,12 @@ class Player {
         this.kickChargeRatio = 0;
         this.stunTimer = 0;
         this.momentumBonus = 0;
+        // Ball pull ability
+        this.pullActive = false;
+        this.pullCooldown = 0;
+        this.pullDuration = 0;
+        this.pullMaxDuration = 1000;  // 1s max pull time
+        this.pullCooldownTime = 8000; // 8s cooldown
     }
 
     reset() {
@@ -31,6 +37,9 @@ class Player {
         this.vy = 0;
         this.kickCooldown = 0;
         this.stunTimer = 0;
+        this.pullActive = false;
+        this.pullCooldown = 0;
+        this.pullDuration = 0;
     }
 
     update(dt) {
@@ -48,6 +57,16 @@ class Player {
         }
 
         if (this.kickCooldown > 0) this.kickCooldown -= dt;
+        if (this.pullCooldown > 0) this.pullCooldown -= dt;
+
+        // Pull duration countdown
+        if (this.pullActive) {
+            this.pullDuration -= dt;
+            if (this.pullDuration <= 0) {
+                this.pullActive = false;
+                this.pullCooldown = this.pullCooldownTime;
+            }
+        }
 
         if (this.powerUpTimer > 0) {
             this.powerUpTimer -= dt;
@@ -89,6 +108,13 @@ class Player {
         this.vy += inputY * accel;
     }
 
+    activatePull() {
+        if (this.pullCooldown > 0 || this.pullActive) return false;
+        this.pullActive = true;
+        this.pullDuration = this.pullMaxDuration;
+        return true;
+    }
+
     kick(ball, chargeRatio = 0) {
         if (this.kickCooldown > 0) return false;
 
@@ -114,11 +140,11 @@ class Player {
         this.vx = this.vx * (1 - chargeRatio * 0.7) - n.x * recoilForce;
         this.vy = this.vy * (1 - chargeRatio * 0.7) - n.y * recoilForce;
 
-        // Super kick at high charge — auto-aim toward enemy goal
+        // Super kick at high charge — auto-aim toward enemy goal + ignite
         if (chargeRatio > 0.8) {
             ball.superKick = 1.0;
-            // Store target: enemy goal center (red attacks right, blue attacks left)
             ball.superTarget = this.team === 'red' ? 'right' : 'left';
+            ball.ignite(1);
         } else {
             ball.superKick = 0;
             ball.superTarget = null;
@@ -159,6 +185,8 @@ class Ball {
         this.spin = 0;
         this.superKick = 0;
         this.superTarget = null;
+        this.fireLevel = 0;
+        this.fireDuration = 0;
     }
 
     reset() {
@@ -171,10 +199,27 @@ class Ball {
         this.spin = 0;
         this.superKick = 0;
         this.superTarget = null;
+        this.fireLevel = 0;
+        this.fireDuration = 0;
+    }
+
+    ignite(level) {
+        if (level > this.fireLevel) this.fireLevel = level;
+        this.fireDuration = level >= 2 ? 4000 : 3000;
     }
 
     update(dt) {
         const s = Physics.dtRatio; // Frame-rate independent scale factor
+
+        // Fire decay
+        if (this.fireLevel > 0) {
+            this.fireDuration -= dt;
+            const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+            if (this.fireDuration <= 0 || speed < 5) {
+                this.fireLevel = 0;
+                this.fireDuration = 0;
+            }
+        }
 
         this.vx *= Math.pow(Physics.BALL_FRICTION, s);
         this.vy *= Math.pow(Physics.BALL_FRICTION, s);
@@ -231,6 +276,11 @@ class Field {
         const padding = 30;
         let widthRatio, heightRatio;
 
+        // Map-specific physics modifiers (defaults)
+        this.frictionMod = 1.0;     // Multiplier on ball friction
+        this.bounceMod = 1.0;       // Multiplier on wall bounce
+        this.playerFrictionMod = 1.0; // Multiplier on player friction
+
         switch (this.mapType) {
             case 'big':
                 widthRatio = 0.92;
@@ -239,6 +289,25 @@ class Field {
             case 'futsal':
                 widthRatio = 0.78;
                 heightRatio = 0.65;
+                break;
+            case 'ice':
+                widthRatio = 0.85;
+                heightRatio = 0.75;
+                this.frictionMod = 0.6;       // Very slippery
+                this.playerFrictionMod = 0.5;  // Players slide more
+                this.bounceMod = 1.3;          // Bouncier walls
+                break;
+            case 'volcano':
+                widthRatio = 0.82;
+                heightRatio = 0.72;
+                this.frictionMod = 1.2;        // Slightly sticky
+                this.bounceMod = 1.8;          // Super bouncy walls
+                break;
+            case 'neon':
+                widthRatio = 0.72;
+                heightRatio = 0.60;
+                this.frictionMod = 0.85;       // Slightly slippery
+                this.bounceMod = 1.2;          // Moderate bounce
                 break;
             default: // classic
                 widthRatio = 0.85;

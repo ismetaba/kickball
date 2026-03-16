@@ -462,6 +462,26 @@ body {
     transform: scale(0.92);
     box-shadow: 0 0 25px rgba(255, 165, 2, 0.6);
 }
+.pull-btn {
+    min-width: 48px;
+    width: 48px;
+    min-height: 48px;
+    height: 48px;
+    background: radial-gradient(circle, #bb66ff 0%, #9c27b0 40%, #7b1fa2 100%);
+    color: #fff;
+    box-shadow: 0 0 15px rgba(156, 39, 176, 0.4), 0 0 40px rgba(156, 39, 176, 0.15);
+    border: 2px solid rgba(200, 130, 255, 0.4);
+    margin-bottom: 16px;
+    font-size: 9px;
+}
+.pull-btn:active {
+    transform: scale(0.92);
+    box-shadow: 0 0 25px rgba(156, 39, 176, 0.6);
+}
+.pull-btn.on-cooldown {
+    opacity: 0.4;
+    box-shadow: none;
+}
 
 /* ---- OVERLAYS ---- */
 .overlay {

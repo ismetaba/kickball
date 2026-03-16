@@ -13,6 +13,8 @@ class Renderer {
         this.hitFlashes = [];
         this._bgGrad = null; // cached background gradient
         this._bgH = 0;
+        this.comboPopup = null;
+        this.suddenDeathFlash = 0;
         this.resize();
     }
 
@@ -37,13 +39,29 @@ class Renderer {
             this.screenShake *= 0.85;
             if (this.screenShake < 0.01) this.screenShake = 0;
         }
-        // Cached background gradient (only recreate on resize)
-        if (!this._bgGrad || this._bgH !== this.h) {
+        // Cached background gradient (only recreate on resize or map change)
+        const mapType = this._currentMapType || 'classic';
+        if (!this._bgGrad || this._bgH !== this.h || this._bgMap !== mapType) {
             this._bgGrad = ctx.createLinearGradient(0, 0, 0, this.h);
-            this._bgGrad.addColorStop(0, '#0a0e27');
-            this._bgGrad.addColorStop(0.5, '#121638');
-            this._bgGrad.addColorStop(1, '#0a0e27');
+            if (mapType === 'ice') {
+                this._bgGrad.addColorStop(0, '#0a1525');
+                this._bgGrad.addColorStop(0.5, '#101e38');
+                this._bgGrad.addColorStop(1, '#0a1525');
+            } else if (mapType === 'volcano') {
+                this._bgGrad.addColorStop(0, '#1a0a05');
+                this._bgGrad.addColorStop(0.5, '#2a1008');
+                this._bgGrad.addColorStop(1, '#1a0a05');
+            } else if (mapType === 'neon') {
+                this._bgGrad.addColorStop(0, '#020208');
+                this._bgGrad.addColorStop(0.5, '#050510');
+                this._bgGrad.addColorStop(1, '#020208');
+            } else {
+                this._bgGrad.addColorStop(0, '#0a0e27');
+                this._bgGrad.addColorStop(0.5, '#121638');
+                this._bgGrad.addColorStop(1, '#0a0e27');
+            }
             this._bgH = this.h;
+            this._bgMap = mapType;
         }
         ctx.fillStyle = this._bgGrad;
         ctx.fillRect(-10, -10, this.w + 20, this.h + 20);
@@ -59,13 +77,68 @@ class Renderer {
 
     drawField(field) {
         const ctx = this.ctx;
+        const mapType = field.mapType || 'classic';
+
+        // Map-specific surface colors
+        const mapThemes = {
+            classic: { surface: 'rgba(20, 25, 60, 0.9)', grid: 'rgba(80, 120, 255, 0.06)', line: 'rgba(0, 229, 255, 0.7)', dot: '#00e5ff', redZone: 'rgba(233, 69, 96, 0.04)', blueZone: 'rgba(83, 216, 251, 0.04)' },
+            big: { surface: 'rgba(20, 25, 60, 0.9)', grid: 'rgba(80, 120, 255, 0.06)', line: 'rgba(0, 229, 255, 0.7)', dot: '#00e5ff', redZone: 'rgba(233, 69, 96, 0.04)', blueZone: 'rgba(83, 216, 251, 0.04)' },
+            futsal: { surface: 'rgba(20, 25, 60, 0.9)', grid: 'rgba(80, 120, 255, 0.06)', line: 'rgba(0, 229, 255, 0.7)', dot: '#00e5ff', redZone: 'rgba(233, 69, 96, 0.04)', blueZone: 'rgba(83, 216, 251, 0.04)' },
+            ice: { surface: 'rgba(180, 220, 240, 0.15)', grid: 'rgba(200, 230, 255, 0.08)', line: 'rgba(100, 200, 255, 0.7)', dot: '#88ddff', redZone: 'rgba(233, 69, 96, 0.06)', blueZone: 'rgba(83, 216, 251, 0.06)' },
+            volcano: { surface: 'rgba(60, 15, 10, 0.9)', grid: 'rgba(255, 80, 30, 0.06)', line: 'rgba(255, 100, 30, 0.7)', dot: '#ff6600', redZone: 'rgba(255, 100, 30, 0.05)', blueZone: 'rgba(255, 200, 50, 0.05)' },
+            neon: { surface: 'rgba(5, 5, 20, 0.95)', grid: 'rgba(0, 255, 128, 0.08)', line: 'rgba(0, 255, 128, 0.8)', dot: '#00ff80', redZone: 'rgba(255, 0, 128, 0.06)', blueZone: 'rgba(0, 128, 255, 0.06)' },
+        };
+        const theme = mapThemes[mapType] || mapThemes.classic;
 
         // Dark playing surface
-        ctx.fillStyle = 'rgba(20, 25, 60, 0.9)';
+        ctx.fillStyle = theme.surface;
         ctx.fillRect(field.x, field.y, field.width, field.height);
 
+        // Ice map: add shiny reflection streaks
+        if (mapType === 'ice') {
+            ctx.globalAlpha = 0.06;
+            ctx.fillStyle = '#fff';
+            for (let i = 0; i < 5; i++) {
+                const rx = field.x + (field.width * (i * 0.22 + 0.05));
+                ctx.fillRect(rx, field.y, 3, field.height);
+            }
+            ctx.globalAlpha = 1;
+        }
+
+        // Volcano map: lava cracks
+        if (mapType === 'volcano') {
+            const t = performance.now() * 0.001;
+            ctx.strokeStyle = `rgba(255, 60, 0, ${0.08 + Math.sin(t) * 0.03})`;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            // Simple zigzag cracks
+            const cx = field.x + field.width * 0.3;
+            const cy = field.y + field.height * 0.2;
+            ctx.moveTo(cx, cy);
+            ctx.lineTo(cx + 30, cy + 40);
+            ctx.lineTo(cx + 10, cy + 80);
+            ctx.lineTo(cx + 40, cy + 120);
+            ctx.stroke();
+            ctx.beginPath();
+            const cx2 = field.x + field.width * 0.7;
+            const cy2 = field.y + field.height * 0.6;
+            ctx.moveTo(cx2, cy2);
+            ctx.lineTo(cx2 - 20, cy2 + 35);
+            ctx.lineTo(cx2 + 15, cy2 + 70);
+            ctx.stroke();
+        }
+
+        // Neon map: animated border glow
+        if (mapType === 'neon') {
+            const t = performance.now() * 0.003;
+            const pulse = 0.3 + Math.sin(t) * 0.15;
+            ctx.strokeStyle = `rgba(0, 255, 128, ${pulse})`;
+            ctx.lineWidth = 4;
+            ctx.strokeRect(field.x - 2, field.y - 2, field.width + 4, field.height + 4);
+        }
+
         // Grid pattern — reduced density
-        ctx.strokeStyle = 'rgba(80, 120, 255, 0.06)';
+        ctx.strokeStyle = theme.grid;
         ctx.lineWidth = 1;
         const gridSize = 40;
         ctx.beginPath();
@@ -80,7 +153,7 @@ class Renderer {
         ctx.stroke(); // Single stroke call for entire grid
 
         // Field outline (no shadowBlur)
-        ctx.strokeStyle = 'rgba(0, 229, 255, 0.7)';
+        ctx.strokeStyle = theme.line;
         ctx.lineWidth = 2;
         ctx.strokeRect(field.x, field.y, field.width, field.height);
 
@@ -96,12 +169,13 @@ class Renderer {
         ctx.stroke();
 
         // Center dot
-        ctx.fillStyle = '#00e5ff';
+        ctx.fillStyle = theme.dot;
         ctx.beginPath();
         ctx.arc(field.centerX, field.centerY, 4, 0, Math.PI * 2);
         ctx.fill();
 
         // Penalty areas
+        ctx.strokeStyle = theme.line;
         ctx.strokeRect(field.x, field.penaltyY, field.penaltyWidth, field.penaltyHeight);
         ctx.strokeRect(
             field.x + field.width - field.penaltyWidth,
@@ -111,9 +185,9 @@ class Renderer {
         );
 
         // Team zone tint (solid fills instead of gradient)
-        ctx.fillStyle = 'rgba(233, 69, 96, 0.04)';
+        ctx.fillStyle = theme.redZone;
         ctx.fillRect(field.x, field.y, field.width / 2, field.height);
-        ctx.fillStyle = 'rgba(83, 216, 251, 0.04)';
+        ctx.fillStyle = theme.blueZone;
         ctx.fillRect(field.centerX, field.y, field.width / 2, field.height);
 
         // Goals
@@ -291,20 +365,26 @@ class Renderer {
     drawBall(ball) {
         const ctx = this.ctx;
         const isSuper = ball.superKick > 0;
+        const isFire = ball.fireLevel > 0;
+        const isBlue = ball.fireLevel >= 2;
         const ballSpeed = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
 
         // Decay super kick
         if (isSuper && ballSpeed < 3) ball.superKick = 0;
 
         // Trail (flat array based — no object allocation)
-        if (isSuper && ballSpeed > 2) {
+        if ((isSuper || isFire) && ballSpeed > 2) {
             // Fire trail
             const len = ball.trail.length;
             for (let i = 0; i < len; i += 2) {
                 const idx = i >> 1;
                 const alpha = 1 - idx / (len / 2);
                 if (alpha <= 0) continue;
-                ctx.fillStyle = `rgba(255,${Math.floor(100 + alpha * 120)},${Math.floor(alpha * 30)},${alpha * 0.6})`;
+                if (isBlue) {
+                    ctx.fillStyle = `rgba(${Math.floor(80 + alpha * 80)},${Math.floor(160 + alpha * 60)},255,${alpha * 0.7})`;
+                } else {
+                    ctx.fillStyle = `rgba(255,${Math.floor(100 + alpha * 120)},${Math.floor(alpha * 30)},${alpha * 0.6})`;
+                }
                 ctx.beginPath();
                 ctx.arc(ball.trail[i], ball.trail[i + 1], ball.radius * alpha * 1.2, 0, Math.PI * 2);
                 ctx.fill();
@@ -312,10 +392,21 @@ class Renderer {
 
             // Fire glow (simple circle)
             ctx.globalAlpha = 0.25;
-            ctx.fillStyle = '#ff8800';
+            ctx.fillStyle = isBlue ? '#4488ff' : '#ff8800';
             ctx.beginPath();
             ctx.arc(ball.x, ball.y, ball.radius * 2.5, 0, Math.PI * 2);
             ctx.fill();
+
+            // Level 2: pulsing outer ring
+            if (isBlue) {
+                const pulse = 0.15 + Math.sin(performance.now() * 0.01) * 0.1;
+                ctx.globalAlpha = pulse;
+                ctx.strokeStyle = '#88ccff';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(ball.x, ball.y, ball.radius * 3 + Math.sin(performance.now() * 0.008) * 4, 0, Math.PI * 2);
+                ctx.stroke();
+            }
             ctx.globalAlpha = 1;
         } else {
             // Normal trail
@@ -338,7 +429,9 @@ class Renderer {
         ctx.fill();
 
         // Ball body
-        const ballColor = (isSuper && ballSpeed > 2) ? '#ffdd44' : '#e0e8ff';
+        let ballColor = '#e0e8ff';
+        if (isBlue && ballSpeed > 2) ballColor = '#aaddff';
+        else if ((isSuper || isFire) && ballSpeed > 2) ballColor = '#ffdd44';
         ctx.fillStyle = ballColor;
         ctx.beginPath();
         ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
@@ -546,6 +639,67 @@ class Renderer {
         }
     }
 
+    drawPullLink(player, ball, dist) {
+        const ctx = this.ctx;
+        const maxRange = 200;
+        const alpha = 0.5 * Math.min(1, 1 - dist / maxRange);
+        const teamRGB = player.team === 'red' ? '233,69,96' : '83,216,251';
+        const t = performance.now() * 0.005;
+
+        // Animated dashed line
+        ctx.strokeStyle = `rgba(${teamRGB},${alpha})`;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.lineDashOffset = -t * 8;
+        ctx.beginPath();
+        ctx.moveTo(player.x, player.y);
+        ctx.lineTo(ball.x, ball.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Pulsing circle around player
+        const pulse = 0.3 + Math.sin(t * 2) * 0.15;
+        ctx.strokeStyle = `rgba(156,39,176,${pulse})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(player.x, player.y, player.radius + 10 + Math.sin(t * 3) * 3, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Small particles along the pull line (4 particles)
+        for (let i = 0; i < 4; i++) {
+            const frac = ((t * 0.3 + i * 0.25) % 1);
+            const px = ball.x + (player.x - ball.x) * frac;
+            const py = ball.y + (player.y - ball.y) * frac;
+            ctx.fillStyle = `rgba(200,130,255,${0.6 * (1 - frac)})`;
+            ctx.beginPath();
+            ctx.arc(px, py, 2 + frac * 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+
+    drawPullIndicator(player) {
+        if (!player.pullActive && player.pullCooldown <= 0) return;
+        const ctx = this.ctx;
+
+        if (player.pullActive) {
+            // Duration remaining indicator (arc around player)
+            const ratio = player.pullDuration / player.pullMaxDuration;
+            ctx.strokeStyle = 'rgba(156,39,176,0.6)';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, player.radius + 18, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * ratio);
+            ctx.stroke();
+        } else if (player.pullCooldown > 0) {
+            // Cooldown indicator (dim arc)
+            const ratio = 1 - player.pullCooldown / player.pullCooldownTime;
+            ctx.strokeStyle = 'rgba(100,60,120,0.3)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, player.radius + 18, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * ratio);
+            ctx.stroke();
+        }
+    }
+
     drawMagnetLink(owner, ball, dist) {
         const ctx = this.ctx;
         const maxRange = 80;
@@ -655,6 +809,34 @@ class Renderer {
         }
     }
 
+    drawKickoffBarrierLine(field, team) {
+        const ctx = this.ctx;
+        const cx = field.centerX;
+        const cy = field.centerY;
+        const cr = field.centerRadius;
+        const time = performance.now() / 1000;
+
+        const alpha = 0.2 + Math.sin(time * 4 + 1) * 0.1;
+        const color = team === 'red'
+            ? `rgba(233, 69, 96, ${alpha})`
+            : `rgba(83, 216, 251, ${alpha})`;
+
+        // Center line with gap for circle
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 8]);
+        ctx.lineDashOffset = -time * 30;
+        ctx.beginPath();
+        ctx.moveTo(cx, field.y);
+        ctx.lineTo(cx, cy - cr);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(cx, cy + cr);
+        ctx.lineTo(cx, field.y + field.height);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+
     // --- Confetti system ---
     spawnConfetti(team) {
         const colors = team === 'red'
@@ -732,5 +914,170 @@ class Renderer {
         }
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.globalAlpha = 1;
+    }
+
+    // --- Combo popup system ---
+    showComboPopup(text, team) {
+        this.comboPopup = {
+            text,
+            team,
+            timer: 0,
+            maxTime: 2000,
+        };
+    }
+
+    drawComboPopup() {
+        if (!this.comboPopup) return;
+        const ctx = this.ctx;
+        const p = this.comboPopup;
+        p.timer += 16.67; // Approximate frame time
+
+        const progress = p.timer / p.maxTime;
+        if (progress >= 1) { this.comboPopup = null; return; }
+
+        // Scale: elastic pop-in then settle
+        let scale;
+        if (progress < 0.15) {
+            scale = 1.5 + (1 - progress / 0.15) * 1.0; // Start big, settle
+        } else {
+            scale = 1.5;
+        }
+
+        // Fade out in last 40%
+        const alpha = progress > 0.6 ? 1 - (progress - 0.6) / 0.4 : 1;
+
+        const cx = this.w / 2;
+        const cy = this.h * 0.35;
+        const teamColor = p.team === 'red' ? '#ff4d6d' : '#4dd4ff';
+
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.translate(cx, cy);
+        ctx.scale(scale, scale);
+
+        // Starburst rays behind text
+        const rayCount = 10;
+        const rayAngle = performance.now() * 0.001;
+        ctx.strokeStyle = teamColor;
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = alpha * 0.3;
+        for (let i = 0; i < rayCount; i++) {
+            const a = rayAngle + (i / rayCount) * Math.PI * 2;
+            ctx.beginPath();
+            ctx.moveTo(Math.cos(a) * 30, Math.sin(a) * 30);
+            ctx.lineTo(Math.cos(a) * 80, Math.sin(a) * 80);
+            ctx.stroke();
+        }
+        ctx.globalAlpha = alpha;
+
+        // Text
+        ctx.font = 'bold 36px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.strokeStyle = teamColor;
+        ctx.lineWidth = 4;
+        ctx.strokeText(p.text, 0, 0);
+        ctx.fillStyle = '#fff';
+        ctx.fillText(p.text, 0, 0);
+
+        ctx.restore();
+    }
+
+    // --- Fire impact effect ---
+    spawnFireImpact(x, y, level) {
+        const color = level >= 2 ? '#88ccff' : '#ffaa33';
+        const count = 8;
+        for (let i = 0; i < count; i++) {
+            const angle = (i / count) * Math.PI * 2;
+            const speed = 2 + Math.random() * 3;
+            this.hitFlashes.push({
+                x, y,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed,
+                life: 1.0,
+                decay: 0.03 + Math.random() * 0.02,
+                size: 3 + Math.random() * 4,
+                color,
+            });
+        }
+    }
+
+    // --- Sudden Death overlay ---
+    showSuddenDeath() {
+        this.suddenDeathFlash = 2000;
+    }
+
+    drawSuddenDeathOverlay(field, shrinkProgress) {
+        const ctx = this.ctx;
+        const maxShrink = 0.15;
+        const s = shrinkProgress * maxShrink;
+        const shrinkX = field.width * s;
+        const shrinkY = field.height * s;
+
+        // Pulsing danger zone borders
+        const pulse = 0.15 + Math.sin(performance.now() * 0.004) * 0.1;
+        ctx.fillStyle = `rgba(255, 50, 30, ${pulse})`;
+
+        // Top danger zone
+        ctx.fillRect(field.x, field.y, field.width, shrinkY);
+        // Bottom danger zone
+        ctx.fillRect(field.x, field.y + field.height - shrinkY, field.width, shrinkY);
+        // Left danger zone
+        ctx.fillRect(field.x, field.y, shrinkX, field.height);
+        // Right danger zone
+        ctx.fillRect(field.x + field.width - shrinkX, field.y, shrinkX, field.height);
+
+        // Inner boundary line
+        ctx.strokeStyle = `rgba(255, 100, 50, ${0.4 + pulse})`;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.lineDashOffset = -performance.now() * 0.02;
+        ctx.strokeRect(
+            field.x + shrinkX, field.y + shrinkY,
+            field.width - shrinkX * 2, field.height - shrinkY * 2
+        );
+        ctx.setLineDash([]);
+    }
+
+    drawSuddenDeathHUD() {
+        const ctx = this.ctx;
+        if (this.suddenDeathFlash > 0) {
+            this.suddenDeathFlash -= 16.67;
+            const progress = this.suddenDeathFlash / 2000;
+
+            // Flash overlay
+            if (progress > 0.8) {
+                ctx.fillStyle = `rgba(255, 30, 0, ${(progress - 0.8) * 1.5})`;
+                ctx.fillRect(0, 0, this.w, this.h);
+            }
+
+            // Big text
+            const textAlpha = progress > 0.3 ? 1 : progress / 0.3;
+            const textScale = progress > 0.85 ? 1.5 + (progress - 0.85) * 3 : 1.5;
+            ctx.save();
+            ctx.globalAlpha = textAlpha;
+            ctx.translate(this.w / 2, this.h * 0.4);
+            ctx.scale(textScale, textScale);
+            ctx.font = 'bold 32px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.strokeStyle = '#ff2200';
+            ctx.lineWidth = 4;
+            ctx.strokeText('SUDDEN DEATH', 0, 0);
+            ctx.fillStyle = '#fff';
+            ctx.fillText('SUDDEN DEATH', 0, 0);
+            ctx.font = '16px sans-serif';
+            ctx.fillText('Next goal wins!', 0, 28);
+            ctx.restore();
+        } else {
+            // Persistent small label
+            ctx.save();
+            ctx.globalAlpha = 0.6 + Math.sin(performance.now() * 0.003) * 0.2;
+            ctx.font = 'bold 14px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#ff4444';
+            ctx.fillText('SUDDEN DEATH', this.w / 2, 18);
+            ctx.restore();
+        }
     }
 }
