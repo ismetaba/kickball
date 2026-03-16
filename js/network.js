@@ -147,7 +147,6 @@ class NetworkManager {
             y: Math.round(p.y),
             vx: Math.round(p.vx * 10) / 10,
             vy: Math.round(p.vy * 10) / 10,
-            d: p.isDashing ? 1 : 0,
             t: p.isTackling ? 1 : 0,
             s: Math.round(p.stunTimer),
             k: Math.round(p.kickChargeRatio * 100) / 100,
@@ -204,7 +203,6 @@ class NetworkManager {
             gp.y += (sp.y - gp.y) * factor;
             gp.vx = sp.vx;
             gp.vy = sp.vy;
-            gp.isDashing = !!sp.d;
             gp.isTackling = !!sp.t;
             gp.stunTimer = sp.s;
             if (gp !== game.humanPlayer) gp.kickChargeRatio = sp.k;
@@ -258,7 +256,6 @@ class NetworkManager {
         return {
             x: Math.round(input.x * 100) / 100,
             y: Math.round(input.y * 100) / 100,
-            dash: input.dash,
             tackle: input.tackle,
             kickCharging: input.kickCharging,
             kickChargeTime: input.kickChargeTime,
@@ -278,7 +275,7 @@ class NetworkManager {
     // Guest: send input (throttled, but one-shot actions always send immediately)
     sendInput(input) {
         const now = performance.now();
-        const hasOneShot = input.kickRelease || input.dash || input.tackle || input.switchPlayer;
+        const hasOneShot = input.kickRelease || input.tackle || input.switchPlayer;
         if (!hasOneShot && now - this.lastInputSend < this.INPUT_SEND_INTERVAL) return;
         this.lastInputSend = now;
         this.send({ t: 'input', d: this.serializeInput(input) });

@@ -32,8 +32,8 @@ class Game {
         this.lastTime = 0;
         this.matchOver = false;
 
-        this.input = { x: 0, y: 0, kick: false, dash: false, tackle: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
-        this.input2 = { x: 0, y: 0, kick: false, dash: false, tackle: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
+        this.input = { x: 0, y: 0, kick: false, tackle: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
+        this.input2 = { x: 0, y: 0, kick: false, tackle: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
         this.timeScale = 1.0;
         this.slowMoTimer = 0;
         this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
@@ -47,7 +47,7 @@ class Game {
         this.isOnline = false;
         this.isHost = false;
         this.network = null;
-        this.remoteInput = { x: 0, y: 0, dash: false, tackle: false, kickCharging: false, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
+        this.remoteInput = { x: 0, y: 0, tackle: false, kickCharging: false, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
         this.remoteHumanPlayer = null;
 
         // Stats
@@ -426,7 +426,6 @@ class Game {
                     hp.kickChargeRatio = 0;
                 }
 
-                if (this.input.dash) hp.dash();
                 if (this.input.tackle) hp.tackle(this.ball);
                 if (this.input.switchPlayer) this.switchToNearestTeammate();
 
@@ -446,7 +445,6 @@ class Game {
             // Only consume one-shot inputs after they were actually sent
             if (sent) {
                 this.input.kickRelease = false;
-                this.input.dash = false;
                 this.input.tackle = false;
                 this.input.switchPlayer = false;
             }
@@ -537,10 +535,6 @@ class Game {
                 this.humanPlayer.tackle(this.ball);
                 Sound.tackle();
                 this.input.tackle = false;
-            } else if (this.input.dash) {
-                this.humanPlayer.dash();
-                Sound.dash();
-                this.input.dash = false;
             }
 
             if (this.input.switchPlayer) {
@@ -582,9 +576,6 @@ class Game {
             if (this.remoteInput.tackle) {
                 this.remoteHumanPlayer.tackle(this.ball);
                 this.remoteInput.tackle = false;
-            } else if (this.remoteInput.dash) {
-                this.remoteHumanPlayer.dash();
-                this.remoteInput.dash = false;
             }
 
             if (this.remoteInput.switchPlayer) {
@@ -625,9 +616,6 @@ class Game {
             if (this.input2.tackle) {
                 this.humanPlayer2.tackle(this.ball);
                 this.input2.tackle = false;
-            } else if (this.input2.dash) {
-                this.humanPlayer2.dash();
-                this.input2.dash = false;
             }
 
             if (this.input2.switchPlayer) {
@@ -663,9 +651,6 @@ class Game {
             }
             if (action.tackle) {
                 player.tackle(this.ball);
-            }
-            if (action.dash) {
-                player.dash();
             }
         }
 

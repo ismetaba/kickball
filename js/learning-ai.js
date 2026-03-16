@@ -96,9 +96,8 @@ class LearningAI {
         const input = this.buildInput(player, ball, field, opponents);
         const output = this.nn.forward(input);
 
-        // NN controls decisions: kick, dash, charge, and positioning offset near ball
+        // NN controls decisions: kick, charge, and positioning offset near ball
         const kickSignal = output[2];
-        const dashSignal = output[3];
         const chargeRatio = Math.min((output[4] + 1) / 2, 0.7);
 
         const distToBall = Physics.distance(player, ball);
@@ -240,7 +239,6 @@ class LearningAI {
 
         return {
             kick: doKick,
-            dash: distToBall > 50 && distToBall < 150 && dashSignal > 0.5,
             tackle: false,
             chargeRatio: kickCharge
         };
@@ -367,14 +365,12 @@ class HeadlessMatch {
         this.redPlayer.vx = 0;
         this.redPlayer.vy = 0;
         this.redPlayer.kickCooldown = 0;
-        this.redPlayer.dashCooldown = 0;
 
         this.bluePlayer.x = this.field.x + this.field.width * 0.75;
         this.bluePlayer.y = this.field.centerY;
         this.bluePlayer.vx = 0;
         this.bluePlayer.vy = 0;
         this.bluePlayer.kickCooldown = 0;
-        this.bluePlayer.dashCooldown = 0;
     }
 
     step(redAI, blueAI) {
@@ -392,10 +388,6 @@ class HeadlessMatch {
         if (blueAction.kick) {
             this.bluePlayer.kick(this.ball, blueAction.chargeRatio || 0.3);
         }
-
-        // Execute dashes
-        if (redAction.dash) this.redPlayer.dash();
-        if (blueAction.dash) this.bluePlayer.dash();
 
         // Update entities
         for (const p of this.players) p.update(dt);
@@ -536,7 +528,6 @@ class ChaserAI {
         const kickTowardGoal = (player.team === 'red') ? kickDirX > 0 : kickDirX < 0;
         return {
             kick: dist < kickRange && kickTowardGoal,
-            dash: dist > 80 && dist < 150 && Math.random() < 0.1,
             tackle: false,
             chargeRatio: 0.4
         };
@@ -562,7 +553,6 @@ class RandomAI {
         player.applyInput(this._mx * 0.4 + bx, this._my * 0.4 + by);
         return {
             kick: dist < player.radius + ball.radius + 12 && Math.random() < 0.7,
-            dash: Math.random() < 0.02,
             tackle: false,
             chargeRatio: Math.random() * 0.5
         };
@@ -590,7 +580,6 @@ class DefenderAI {
         const kickAway = (player.team === 'red') ? kickDirX > 0 : kickDirX < 0;
         return {
             kick: ballDist < kickRange && kickAway,
-            dash: ballDist < 60 && ballDist > 30 && Math.random() < 0.15,
             tackle: false,
             chargeRatio: 0.5
         };

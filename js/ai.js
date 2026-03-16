@@ -91,7 +91,7 @@ class AIController {
 
         if (this.decisionTimer > 0) {
             this.moveToTarget(player);
-            return { kick: false, dash: false, tackle: false, chargeRatio: 0.3 };
+            return { kick: false, tackle: false, chargeRatio: 0.3 };
         }
 
         this.decisionTimer = this.reactionTime + Math.random() * this.reactionJitter;
@@ -100,7 +100,6 @@ class AIController {
         this.assignRole(player, ball, field, teammates, opponents);
 
         let kick = false;
-        let dash = false;
         let tackle = false;
         let chargeRatio = 0.3;
 
@@ -138,21 +137,8 @@ class AIController {
             }
         }
 
-        // Dash: sprint toward ball strategically
-        if (!kick && !tackle && player.dashCooldown <= 0) {
-            // Attacker: dash to reach ball first
-            if (this.role === 'attack' && distToBall > 50 && distToBall < 150) {
-                if (Math.random() < this.aggressiveness * 0.35) dash = true;
-            }
-            // Defender: dash to intercept incoming ball
-            if (this.role === 'defend' && distToBall < 100 && distToBall > 40) {
-                const ballComingOurWay = player.team === 'red' ? ball.vx < -2 : ball.vx > 2;
-                if (ballComingOurWay && Math.random() < this.aggressiveness * 0.4) dash = true;
-            }
-        }
-
         this.moveToTarget(player);
-        return { kick, dash, tackle, chargeRatio };
+        return { kick, tackle, chargeRatio };
     }
 
     assignRole(player, ball, field, teammates, opponents) {

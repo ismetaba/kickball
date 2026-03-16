@@ -81,18 +81,10 @@ class Controls {
             kickBtn.style.transform = '';
         });
 
-        // Dash button (double-tap within 300ms triggers tackle instead)
+        // Tackle button
         dashBtn.addEventListener('touchstart', (e) => {
             e.preventDefault();
-            const now = performance.now();
-            if (now - this.lastDashTapTime < 300) {
-                // Double-tap: tackle
-                this.game.input.tackle = true;
-                this.game.input.dash = false;
-            } else {
-                this.game.input.dash = true;
-            }
-            this.lastDashTapTime = now;
+            this.game.input.tackle = true;
             dashBtn.style.transform = 'scale(0.9)';
         }, { passive: false });
 
@@ -192,14 +184,7 @@ class Controls {
                 }
             }
             if (key === 'Shift') {
-                const now = performance.now();
-                if (now - this.lastDashKeyTapTime < 300) {
-                    this.game.input.tackle = true;
-                    this.game.input.dash = false;
-                } else {
-                    this.game.input.dash = true;
-                }
-                this.lastDashKeyTapTime = now;
+                this.game.input.tackle = true;
             }
             if (key === 'q') {
                 this.game.input.switchPlayer = true;
@@ -213,14 +198,7 @@ class Controls {
                 }
             }
             if (key === '/' || key === 'NumpadDecimal') {
-                const now = performance.now();
-                if (now - this.lastDashKeyTapTime2 < 300) {
-                    this.game.input2.tackle = true;
-                    this.game.input2.dash = false;
-                } else {
-                    this.game.input2.dash = true;
-                }
-                this.lastDashKeyTapTime2 = now;
+                this.game.input2.tackle = true;
             }
             if (key === '.' || key === 'Numpad0') {
                 this.game.input2.switchPlayer = true;

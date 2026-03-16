@@ -13,9 +13,6 @@ class Player {
         this.team = team; // 'red' or 'blue'
         this.isHuman = isHuman;
         this.kickCooldown = 0;
-        this.dashCooldown = 0;
-        this.dashTimer = 0;
-        this.isDashing = false;
         this.powerUp = null;
         this.powerUpTimer = 0;
         this.goals = 0;
@@ -40,8 +37,6 @@ class Player {
         this.vx = 0;
         this.vy = 0;
         this.kickCooldown = 0;
-        this.isDashing = false;
-        this.dashTimer = 0;
         this.isTackling = false;
         this.tackleTimer = 0;
         this.tackleRecoveryTimer = 0;
@@ -63,15 +58,7 @@ class Player {
         }
 
         if (this.kickCooldown > 0) this.kickCooldown -= dt;
-        if (this.dashCooldown > 0) this.dashCooldown -= dt;
         if (this.tackleCooldown > 0) this.tackleCooldown -= dt;
-
-        if (this.isDashing) {
-            this.dashTimer -= dt;
-            if (this.dashTimer <= 0) {
-                this.isDashing = false;
-            }
-        }
 
         if (this.isTackling) {
             this.tackleTimer -= dt;
@@ -95,12 +82,12 @@ class Player {
         }
 
         // Apply friction (frame-rate independent)
-        const friction = (this.isDashing || this.isTackling) ? 0.995 : Physics.FRICTION;
+        const friction = this.isTackling ? 0.995 : Physics.FRICTION;
         this.vx *= Math.pow(friction, s);
         this.vy *= Math.pow(friction, s);
 
         // Clamp speed
-        const maxSpeed = (this.isDashing || this.isTackling) ? Physics.MAX_PLAYER_SPEED * 2 : this.getMaxSpeed();
+        const maxSpeed = this.isTackling ? Physics.MAX_PLAYER_SPEED * 2 : this.getMaxSpeed();
         Physics.clampSpeed(this, maxSpeed);
 
         this.x += this.vx * s;
@@ -127,30 +114,11 @@ class Player {
         this.vy += inputY * accel;
     }
 
-    dash() {
-        if (this.dashCooldown > 0 || this.isDashing) return false;
-
-        const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
-        if (speed < 0.5) {
-            // Dash forward if standing still (towards center)
-            this.vx = (this.team === 'red' ? 1 : -1) * Physics.DASH_FORCE;
-        } else {
-            const n = Physics.normalize(this.vx, this.vy);
-            this.vx = n.x * Physics.DASH_FORCE;
-            this.vy = n.y * Physics.DASH_FORCE;
-        }
-
-        this.isDashing = true;
-        this.dashTimer = Physics.DASH_DURATION;
-        this.dashCooldown = Physics.DASH_COOLDOWN;
-        return true;
-    }
-
     kick(ball, chargeRatio = 0) {
         if (this.kickCooldown > 0) return false;
 
         const dist = Physics.distance(this, ball);
-        const kickRange = this.radius + ball.radius + 8;
+        const kickRange = this.radius + ball.radius + 16;
 
         if (dist > kickRange) return false;
 
@@ -193,7 +161,7 @@ class Player {
         // Apply spin to ball for continuous curving in flight
         ball.spin = movePerp * (this.powerUp === 'curve' ? 0.5 : 0.25);
 
-        this.kickCooldown = 250;
+        this.kickCooldown = 180;
         this.kicks++;
         ball.lastKickedBy = this;
         return true;
@@ -210,8 +178,9 @@ class Player {
         const dy = ball.y - this.y;
         const n = Physics.normalize(dx, dy);
 
-        this.vx = n.x * Physics.DASH_FORCE * 1.2;
-        this.vy = n.y * Physics.DASH_FORCE * 1.2;
+        const tackleForce = 6.0;
+        this.vx = n.x * tackleForce;
+        this.vy = n.y * tackleForce;
 
         this.isTackling = true;
         this.tackleTimer = 200;
@@ -277,19 +246,19 @@ class Ball {
         this.x += this.vx * s;
         this.y += this.vy * s;
 
-        // Trail effect — more particles during super kick
+        // Trail effect — flat array [x0,y0,x1,y1,...] for performance
         const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+        const maxTrailLen = this.superKick > 0 ? 40 : 20; // max coordinate pairs (x2)
         if (this.superKick > 0 && speed > 1) {
-            this.trail.push({ x: this.x, y: this.y, life: 1.0 });
-            this.trail.push({ x: this.x + (Math.random() - 0.5) * 6, y: this.y + (Math.random() - 0.5) * 6, life: 0.8 });
+            this.trail.push(this.x, this.y);
+            this.trail.push(this.x + (Math.random() - 0.5) * 6, this.y + (Math.random() - 0.5) * 6);
         } else if (speed > 3) {
-            this.trail.push({ x: this.x, y: this.y, life: 1.0 });
+            this.trail.push(this.x, this.y);
         }
-        // Decay trail (scaled for consistent duration)
-        const decayRate = (this.superKick > 0 ? 0.03 : 0.05) * s;
-        for (let i = this.trail.length - 1; i >= 0; i--) {
-            this.trail[i].life -= decayRate;
-            if (this.trail[i].life <= 0) this.trail.splice(i, 1);
+        // Trim old trail entries from front (FIFO)
+        while (this.trail.length > maxTrailLen) {
+            this.trail.shift();
+            this.trail.shift();
         }
     }
 }
