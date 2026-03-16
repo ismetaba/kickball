@@ -331,10 +331,23 @@ class Renderer {
             }
         }
 
-        // Ball body (solid color, no gradient)
-        ctx.fillStyle = (isSuper && ballSpeed > 2) ? '#ffdd44' : '#e0e8ff';
+        // Ball shadow
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.beginPath();
+        ctx.ellipse(ball.x + 2, ball.y + 4, ball.radius * 0.9, ball.radius * 0.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Ball body
+        const ballColor = (isSuper && ballSpeed > 2) ? '#ffdd44' : '#e0e8ff';
+        ctx.fillStyle = ballColor;
         ctx.beginPath();
         ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Ball highlight (cheap 3D effect — single arc, no gradient)
+        ctx.fillStyle = 'rgba(255,255,255,0.25)';
+        ctx.beginPath();
+        ctx.arc(ball.x - ball.radius * 0.25, ball.y - ball.radius * 0.25, ball.radius * 0.45, 0, Math.PI * 2);
         ctx.fill();
 
         // Ball pattern (pentagon dots)
@@ -351,7 +364,7 @@ class Renderer {
         }
 
         // Ball outline
-        ctx.strokeStyle = 'rgba(160,180,255,0.6)';
+        ctx.strokeStyle = 'rgba(160,180,255,0.5)';
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
@@ -368,29 +381,6 @@ class Renderer {
         ctx.beginPath();
         ctx.ellipse(player.x + 2, player.y + 4, player.radius * 0.9, player.radius * 0.5, 0, 0, Math.PI * 2);
         ctx.fill();
-
-        // Tackle slide effect
-        if (player.isTackling) {
-            const trailColor = player.team === 'red' ? 'rgba(233,69,96,0.35)' : 'rgba(83,216,251,0.35)';
-            const trailX = player.x - player.tackleDirX * player.radius * 1.5;
-            const trailY = player.y - player.tackleDirY * player.radius * 1.5;
-            const slideAngle = Math.atan2(player.tackleDirY, player.tackleDirX);
-            ctx.fillStyle = trailColor;
-            ctx.beginPath();
-            ctx.ellipse(trailX, trailY, player.radius * 1.8, player.radius * 0.5, slideAngle, 0, Math.PI * 2);
-            ctx.fill();
-        }
-
-        // Dribble effect (simplified — single afterimage)
-        if (player.isDribbling) {
-            ctx.globalAlpha = 0.2;
-            ctx.fillStyle = baseColor;
-            ctx.beginPath();
-            ctx.arc(player.x - player.vx * 2, player.y - player.vy * 2,
-                    player.radius * 0.7, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.globalAlpha = 1;
-        }
 
         // Power-up ring
         if (player.powerUp && player.powerUp !== 'frozen') {
@@ -543,6 +533,17 @@ class Renderer {
         ctx.beginPath();
         ctx.arc(tipX, tipY, 3, 0, Math.PI * 2);
         ctx.fill();
+
+        // Fully charged: pulsing glow
+        if (ratio > 0.8) {
+            const pulse = 0.4 + Math.sin(performance.now() * 0.008) * 0.2;
+            const glowRadius = player.radius + 20 + Math.sin(performance.now() * 0.006) * 4;
+            ctx.strokeStyle = `rgba(255, 200, 50, ${pulse})`;
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, glowRadius, 0, Math.PI * 2);
+            ctx.stroke();
+        }
     }
 
     drawMagnetLink(owner, ball, dist) {

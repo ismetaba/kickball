@@ -19,13 +19,6 @@ class Player {
         this.assists = 0;
         this.kicks = 0;
         this.lastTouchedBall = false;
-        // Tackle properties
-        this.tackleCooldown = 0;
-        this.tackleTimer = 0;
-        this.isTackling = false;
-        this.tackleRecoveryTimer = 0;
-        this.tackleDirX = 0;
-        this.tackleDirY = 0;
         this.kickChargeRatio = 0;
         this.stunTimer = 0;
         this.momentumBonus = 0;
@@ -37,9 +30,6 @@ class Player {
         this.vx = 0;
         this.vy = 0;
         this.kickCooldown = 0;
-        this.isTackling = false;
-        this.tackleTimer = 0;
-        this.tackleRecoveryTimer = 0;
         this.stunTimer = 0;
     }
 
@@ -58,36 +48,21 @@ class Player {
         }
 
         if (this.kickCooldown > 0) this.kickCooldown -= dt;
-        if (this.tackleCooldown > 0) this.tackleCooldown -= dt;
-
-        if (this.isTackling) {
-            this.tackleTimer -= dt;
-            if (this.tackleTimer <= 0) {
-                this.isTackling = false;
-                this.tackleRecoveryTimer = 200;
-            }
-        }
-
-        if (this.tackleRecoveryTimer > 0) {
-            this.tackleRecoveryTimer -= dt;
-            this.vx *= Math.pow(0.85, s);
-            this.vy *= Math.pow(0.85, s);
-        }
 
         if (this.powerUpTimer > 0) {
             this.powerUpTimer -= dt;
             if (this.powerUpTimer <= 0) {
+                if (this.powerUp === 'big') this.radius = 24;
                 this.powerUp = null;
             }
         }
 
         // Apply friction (frame-rate independent)
-        const friction = this.isTackling ? 0.995 : Physics.FRICTION;
-        this.vx *= Math.pow(friction, s);
-        this.vy *= Math.pow(friction, s);
+        this.vx *= Math.pow(Physics.FRICTION, s);
+        this.vy *= Math.pow(Physics.FRICTION, s);
 
         // Clamp speed
-        const maxSpeed = this.isTackling ? Physics.MAX_PLAYER_SPEED * 2 : this.getMaxSpeed();
+        const maxSpeed = this.getMaxSpeed();
         Physics.clampSpeed(this, maxSpeed);
 
         this.x += this.vx * s;
@@ -118,7 +93,7 @@ class Player {
         if (this.kickCooldown > 0) return false;
 
         const dist = Physics.distance(this, ball);
-        const kickRange = this.radius + ball.radius + 16;
+        const kickRange = this.radius + ball.radius + 21;
 
         if (dist > kickRange) return false;
 
@@ -134,10 +109,10 @@ class Player {
         ball.vx = n.x * force + this.vx * 0.3;
         ball.vy = n.y * force + this.vy * 0.3;
 
-        // Recoil: kicker gets pushed back (stronger with more charge)
-        const recoilForce = 2 + chargeRatio * 5;
-        this.vx = -n.x * recoilForce;
-        this.vy = -n.y * recoilForce;
+        // Recoil: light taps keep momentum, charged kicks push back
+        const recoilForce = chargeRatio * 3;
+        this.vx = this.vx * (1 - chargeRatio * 0.7) - n.x * recoilForce;
+        this.vy = this.vy * (1 - chargeRatio * 0.7) - n.y * recoilForce;
 
         // Super kick at high charge — auto-aim toward enemy goal
         if (chargeRatio > 0.8) {
@@ -167,29 +142,6 @@ class Player {
         return true;
     }
 
-    tackle(ball) {
-        if (this.tackleCooldown > 0 || this.isTackling || this.tackleRecoveryTimer > 0) return false;
-
-        const dist = Physics.distance(this, ball);
-        if (dist > 100) return false;
-
-        // Lunge toward the ball
-        const dx = ball.x - this.x;
-        const dy = ball.y - this.y;
-        const n = Physics.normalize(dx, dy);
-
-        const tackleForce = 6.0;
-        this.vx = n.x * tackleForce;
-        this.vy = n.y * tackleForce;
-
-        this.isTackling = true;
-        this.tackleTimer = 200;
-        this.tackleCooldown = 2000;
-        this.tackleDirX = n.x;
-        this.tackleDirY = n.y;
-
-        return true;
-    }
 }
 
 class Ball {
@@ -254,6 +206,10 @@ class Ball {
             this.trail.push(this.x + (Math.random() - 0.5) * 6, this.y + (Math.random() - 0.5) * 6);
         } else if (speed > 3) {
             this.trail.push(this.x, this.y);
+        } else if (this.trail.length > 0) {
+            // Ball slowed down — shrink trail so it fades away instead of freezing
+            this.trail.shift();
+            this.trail.shift();
         }
         // Trim old trail entries from front (FIFO)
         while (this.trail.length > maxTrailLen) {

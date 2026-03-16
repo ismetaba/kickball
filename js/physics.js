@@ -2,16 +2,16 @@
 const Physics = {
     dtRatio: 1, // Frame-rate independent scale factor (dt / 16.67)
     GAME_SPEED: 1.2, // Global game speed multiplier
-    FRICTION: 0.96,
-    BALL_FRICTION: 0.99,
+    FRICTION: 0.955,
+    BALL_FRICTION: 0.993,
     WALL_BOUNCE: 0.5,
     PLAYER_BOUNCE: 0.5,
-    BALL_BOUNCE: 0.5,
-    MAX_PLAYER_SPEED: 5.0,
-    MAX_BALL_SPEED: 28,
-    KICK_FORCE: 8,
-    POWER_KICK_FORCE: 12,
-    PLAYER_ACCELERATION: 0.12,
+    BALL_BOUNCE: 0.35,
+    MAX_PLAYER_SPEED: 4.2,
+    MAX_BALL_SPEED: 30,
+    KICK_FORCE: 10,
+    POWER_KICK_FORCE: 16,
+    PLAYER_ACCELERATION: 0.16,
 
     distance(a, b) {
         const dx = a.x - b.x;

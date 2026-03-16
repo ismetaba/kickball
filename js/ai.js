@@ -91,7 +91,7 @@ class AIController {
 
         if (this.decisionTimer > 0) {
             this.moveToTarget(player);
-            return { kick: false, tackle: false, chargeRatio: 0.3 };
+            return { kick: false, chargeRatio: 0.3 };
         }
 
         this.decisionTimer = this.reactionTime + Math.random() * this.reactionJitter;
@@ -100,7 +100,6 @@ class AIController {
         this.assignRole(player, ball, field, teammates, opponents);
 
         let kick = false;
-        let tackle = false;
         let chargeRatio = 0.3;
 
         const distToBall = Physics.distance(player, ball);
@@ -127,18 +126,8 @@ class AIController {
             chargeRatio = result.chargeRatio;
         }
 
-        // Tackle: lunge at opponent who controls the ball
-        if (!kick && distToBall > kickDist && distToBall < 90 && player.tackleCooldown <= 0) {
-            const oppNearBall = this.nearestTo(ball, opponents);
-            if (oppNearBall && Physics.distance(oppNearBall, ball) < 35) {
-                if (Math.random() < this.aggressiveness * 0.5) {
-                    tackle = true;
-                }
-            }
-        }
-
         this.moveToTarget(player);
-        return { kick, tackle, chargeRatio };
+        return { kick, chargeRatio };
     }
 
     assignRole(player, ball, field, teammates, opponents) {

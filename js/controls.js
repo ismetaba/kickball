@@ -11,10 +11,6 @@ class Controls {
         this.baseX = 0;
         this.baseY = 0;
 
-        // Double-tap tracking for tackle
-        this.lastDashTapTime = 0;
-        this.lastDashKeyTapTime = 0;
-
         this.setupTouch();
         this.setupKeyboard();
     }
@@ -22,7 +18,6 @@ class Controls {
     setupTouch() {
         const joystickZone = this.joystickZone;
         const kickBtn = document.getElementById('btn-kick');
-        const dashBtn = document.getElementById('btn-dash');
 
         // Joystick
         joystickZone.addEventListener('touchstart', (e) => {
@@ -74,22 +69,11 @@ class Controls {
         kickBtn.addEventListener('touchend', (e) => {
             if (this.game.input.kickCharging) {
                 const holdTime = performance.now() - this.game.input.kickChargeStart;
-                this.game.input.kickChargeTime = Math.min(holdTime, 1000);
+                this.game.input.kickChargeTime = Math.min(holdTime, 1500);
                 this.game.input.kickCharging = false;
                 this.game.input.kickRelease = true;
             }
             kickBtn.style.transform = '';
-        });
-
-        // Tackle button
-        dashBtn.addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            this.game.input.tackle = true;
-            dashBtn.style.transform = 'scale(0.9)';
-        }, { passive: false });
-
-        dashBtn.addEventListener('touchend', (e) => {
-            dashBtn.style.transform = '';
         });
 
         // Switch/Swap button
@@ -141,7 +125,6 @@ class Controls {
     setupKeyboard() {
         const keys = {};
         this._keys = keys; // expose for clearing
-        this.lastDashKeyTapTime2 = 0;
 
         // Clear all input when window loses focus to prevent stuck movement
         const clearAllInput = () => {
@@ -183,9 +166,6 @@ class Controls {
                     this.game.input.kickChargeStart = performance.now();
                 }
             }
-            if (key === 'Shift') {
-                this.game.input.tackle = true;
-            }
             if (key === 'q') {
                 this.game.input.switchPlayer = true;
             }
@@ -196,9 +176,6 @@ class Controls {
                     this.game.input2.kickCharging = true;
                     this.game.input2.kickChargeStart = performance.now();
                 }
-            }
-            if (key === '/' || key === 'NumpadDecimal') {
-                this.game.input2.tackle = true;
             }
             if (key === '.' || key === 'Numpad0') {
                 this.game.input2.switchPlayer = true;
@@ -220,7 +197,7 @@ class Controls {
             if (key === ' ') {
                 if (this.game.input.kickCharging) {
                     const holdTime = performance.now() - this.game.input.kickChargeStart;
-                    this.game.input.kickChargeTime = Math.min(holdTime, 1000);
+                    this.game.input.kickChargeTime = Math.min(holdTime, 1500);
                     this.game.input.kickCharging = false;
                     this.game.input.kickRelease = true;
                 }
@@ -229,7 +206,7 @@ class Controls {
             if (key === 'Enter') {
                 if (this.game.input2.kickCharging) {
                     const holdTime = performance.now() - this.game.input2.kickChargeStart;
-                    this.game.input2.kickChargeTime = Math.min(holdTime, 1000);
+                    this.game.input2.kickChargeTime = Math.min(holdTime, 1500);
                     this.game.input2.kickCharging = false;
                     this.game.input2.kickRelease = true;
                 }

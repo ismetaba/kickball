@@ -446,19 +446,6 @@ body {
     transform: scale(0.92);
     box-shadow: 0 0 35px rgba(255, 77, 109, 0.7), 0 0 80px rgba(255, 77, 109, 0.3);
 }
-.dash-btn {
-    width: 60px;
-    height: 60px;
-    background: radial-gradient(circle, #66e0ff 0%, #4dd4ff 40%, #2299cc 100%);
-    color: #fff;
-    box-shadow: 0 0 20px rgba(77, 212, 255, 0.4), 0 0 50px rgba(77, 212, 255, 0.15);
-    border: 2px solid rgba(120, 220, 255, 0.4);
-    margin-bottom: 10px;
-}
-.dash-btn:active {
-    transform: scale(0.92);
-    box-shadow: 0 0 30px rgba(77, 212, 255, 0.6);
-}
 .switch-btn {
     min-width: 48px;
     width: 48px;
@@ -687,7 +674,6 @@ body {
     .game-title { font-size: 72px; }
     #touch-controls { height: 220px; padding: 30px 40px; }
     .kick-btn { width: 90px; height: 90px; font-size: 14px; }
-    .dash-btn { width: 70px; height: 70px; font-size: 13px; }
     #joystick-base { width: 140px; height: 140px; }
     #joystick-thumb { width: 60px; height: 60px; }
 }
@@ -695,7 +681,6 @@ body {
 @media (max-height: 500px) {
     #touch-controls { height: 140px; padding: 10px 20px; }
     .kick-btn { width: 65px; height: 65px; font-size: 11px; }
-    .dash-btn { width: 50px; height: 50px; font-size: 11px; }
     .switch-btn { min-width: 36px; width: 36px; min-height: 36px; height: 36px; font-size: 9px; }
     #joystick-base { width: 100px; height: 100px; }
     #joystick-thumb { width: 40px; height: 40px; }

@@ -103,25 +103,6 @@ class LearningAI {
         const distToBall = Physics.distance(player, ball);
         const kickRange = player.radius + ball.radius + 12;
         const nearBall = distToBall < kickRange;
-        player.isDribbling = false; // reset each frame
-
-        // Find nearest opponent distance
-        let nearestOppDist = Infinity;
-        let nearestOpp = null;
-        for (const o of opponents) {
-            const d = Physics.distance(player, o);
-            if (d < nearestOppDist) { nearestOppDist = d; nearestOpp = o; }
-        }
-
-        // --- Dribbling (çalım) detection ---
-        // Dribble when: we have the ball AND opponent is pressuring but we have possession
-        const hasBall = distToBall < kickRange + 20;
-        const oppPressure = nearestOppDist < 150;
-        // Only dribble if WE are closer to the ball than the nearest opponent
-        const nearestOppToBall = nearestOpp ? Physics.distance(nearestOpp, ball) : Infinity;
-        const havePossession = distToBall < nearestOppToBall - 5;
-        const shouldDribble = hasBall && oppPressure && nearestOpp && havePossession;
-
         // --- Role assignment for 2v2+ ---
         let role = 'attack';
         if (teammates.length > 1) {
@@ -137,58 +118,8 @@ class LearningAI {
         }
 
         let moveX = 0, moveY = 0;
-        let dribbleKick = false;
-        let dribbleCharge = 0;
 
-        if (shouldDribble && role === 'attack') {
-            // --- Çalım (dribble) mode ---
-            player.isDribbling = true;
-            const forwardDir = player.team === 'red' ? 1 : -1;
-            const oppGoalX = player.team === 'red' ? field.x + field.width : field.x;
-            const goalCY = field.goalY + field.goalHeight / 2;
-
-            // Movement: dodge perpendicular to opponent, biased toward goal
-            const oppDx = nearestOpp.x - player.x;
-            const oppDy = nearestOpp.y - player.y;
-            const oppDist = Math.sqrt(oppDx * oppDx + oppDy * oppDy);
-
-            const toGoalX = oppGoalX - player.x;
-            const toGoalY = goalCY - player.y;
-            const toGoalDist = Math.sqrt(toGoalX * toGoalX + toGoalY * toGoalY);
-            const goalDirX = toGoalDist > 1 ? toGoalX / toGoalDist : forwardDir;
-            const goalDirY = toGoalDist > 1 ? toGoalY / toGoalDist : 0;
-
-            if (oppDist > 1) {
-                const perpX1 = -oppDy / oppDist, perpY1 = oppDx / oppDist;
-                const perpX2 = oppDy / oppDist, perpY2 = -oppDx / oppDist;
-                const dot1 = perpX1 * goalDirX + perpY1 * goalDirY;
-                const dot2 = perpX2 * goalDirX + perpY2 * goalDirY;
-                const perpX = dot1 > dot2 ? perpX1 : perpX2;
-                const perpY = dot1 > dot2 ? perpY1 : perpY2;
-
-                // Mostly forward, some dodge
-                moveX = perpX * 0.35 + goalDirX * 0.65;
-                moveY = perpY * 0.35 + goalDirY * 0.65;
-                const len = Math.sqrt(moveX * moveX + moveY * moveY);
-                if (len > 0.01) { moveX /= len; moveY /= len; }
-            } else {
-                moveX = goalDirX;
-                moveY = goalDirY;
-            }
-
-            // Dribble nudge: directly push ball toward opponent goal (bypass player.kick direction)
-            if (nearBall && player.kickCooldown <= 0) {
-                dribbleKick = false; // Don't use normal kick — use direct nudge instead
-                // Nudge ball: add velocity toward opponent goal + slight dodge
-                const nudgeForce = 3.0;
-                const nudgeDirX = goalDirX * 0.8 + (moveX - goalDirX) * 0.2;
-                const nudgeDirY = goalDirY * 0.8 + (moveY - goalDirY) * 0.2;
-                ball.vx += nudgeDirX * nudgeForce;
-                ball.vy += nudgeDirY * nudgeForce;
-                ball.lastKickedBy = player;
-                player.kickCooldown = 200; // cooldown between nudges
-            }
-        } else if (role === 'attack') {
+        if (role === 'attack') {
             // Normal attack: chase ball directly
             const dx = ball.x - player.x;
             const dy = ball.y - player.y;
@@ -233,13 +164,12 @@ class LearningAI {
 
         player.applyInput(moveX, moveY);
 
-        // Kick decision: dribble soft touch OR normal kick
-        const doKick = dribbleKick || (nearBall && kickSignal > 0.5 && !shouldDribble);
-        const kickCharge = dribbleKick ? dribbleCharge : chargeRatio;
+        // Kick decision
+        const doKick = nearBall && kickSignal > 0.5;
+        const kickCharge = chargeRatio;
 
         return {
             kick: doKick,
-            tackle: false,
             chargeRatio: kickCharge
         };
     }
@@ -528,7 +458,6 @@ class ChaserAI {
         const kickTowardGoal = (player.team === 'red') ? kickDirX > 0 : kickDirX < 0;
         return {
             kick: dist < kickRange && kickTowardGoal,
-            tackle: false,
             chargeRatio: 0.4
         };
     }
@@ -553,7 +482,6 @@ class RandomAI {
         player.applyInput(this._mx * 0.4 + bx, this._my * 0.4 + by);
         return {
             kick: dist < player.radius + ball.radius + 12 && Math.random() < 0.7,
-            tackle: false,
             chargeRatio: Math.random() * 0.5
         };
     }
@@ -580,7 +508,6 @@ class DefenderAI {
         const kickAway = (player.team === 'red') ? kickDirX > 0 : kickDirX < 0;
         return {
             kick: ballDist < kickRange && kickAway,
-            tackle: false,
             chargeRatio: 0.5
         };
     }
@@ -612,8 +539,8 @@ class EvolutionTrainer {
             new ChaserAI(),
             new RandomAI(),
             new DefenderAI(),
-            new AIController('easy'),
-            new AIController('medium'),
+            new AIController('normal'),
+            new AIController('expert'),
         ];
 
         // Hall of fame: past best agents to prevent forgetting

@@ -80,8 +80,6 @@ class PowerUpManager {
             player.radius = 34;
             player.powerUp = 'big';
             player.powerUpTimer = type.duration;
-            // Reset radius when power-up ends (handled in player update)
-            setTimeout(() => { player.radius = 24; }, type.duration);
         } else {
             player.powerUp = type.id;
             player.powerUpTimer = type.duration;

@@ -251,26 +251,6 @@ class SoundManager {
         this._noiseBurst('bandpass', 600 + v * 400, 4, t, 0.04, 0.04 + v * 0.05);
     }
 
-    dash() {
-        if (!this.ctx) return;
-        const t = this._now();
-        // Fast rising whoosh
-        this._noiseSwoop('bandpass', 400, 3500, 2, t, 0.12, 0.1);
-        // Quick low thump
-        this._sweep('sine', 120, 60, t, 0.05, 0.06);
-    }
-
-    tackle() {
-        if (!this.ctx) return;
-        const t = this._now();
-        // Sliding scrape
-        this._noiseSwoop('bandpass', 800, 200, 3, t, 0.18, 0.12);
-        // Ground thud
-        this._sweep('sine', 100, 40, t, 0.1, 0.1);
-        // Dirt scatter
-        this._noiseBurst('highpass', 2500, 1, t + 0.02, 0.08, 0.05);
-    }
-
     playerCollision(intensity) {
         if (!this.ctx) return;
         const t = this._now();
