@@ -30,6 +30,7 @@
                 <button id="btn-tournament" class="menu-btn">Tournament</button>
                 <button id="btn-practice" class="menu-btn">Practice Mode</button>
                 <button id="btn-train-ai" class="menu-btn">Train AI</button>
+                <button id="btn-ai-vs-ai" class="menu-btn">AI vs AI</button>
                 <button id="btn-settings" class="menu-btn">Settings</button>
                 <button id="btn-how-to-play" class="menu-btn">How to Play</button>
             </div>
@@ -82,12 +83,9 @@
             <div class="setting-group">
                 <label>Map</label>
                 <div class="option-row">
+                    <button class="option-btn" data-map="big">Small</button>
                     <button class="option-btn active" data-map="classic">Classic</button>
-                    <button class="option-btn" data-map="big">Big</button>
-                    <button class="option-btn" data-map="futsal">Futsal</button>
-                    <button class="option-btn" data-map="ice">Ice</button>
-                    <button class="option-btn" data-map="volcano">Volcano</button>
-                    <button class="option-btn" data-map="neon">Neon</button>
+                    <button class="option-btn" data-map="huge">Huge</button>
                 </div>
             </div>
             <div class="setting-group">
@@ -227,6 +225,42 @@
             <div id="train-progress-bar" style="width:100%;height:6px;background:#1a1a2e;border-radius:3px;margin:16px 0;overflow:hidden;">
                 <div id="train-progress-fill" style="width:0%;height:100%;background:linear-gradient(90deg,#e94560,#0f3460);border-radius:3px;transition:width 0.3s;"></div>
             </div>
+            <div class="setting-group" style="margin-bottom:12px;">
+                <label style="color:#53d8fb;font-size:14px;margin-bottom:8px;display:block;">Skill Weights</label>
+                <div class="btn-row" style="gap:6px;margin-bottom:10px;">
+                    <button class="option-btn skill-preset" data-preset="balanced">Balanced</button>
+                    <button class="option-btn skill-preset" data-preset="offense">Offense</button>
+                    <button class="option-btn skill-preset" data-preset="defense">Defense</button>
+                    <button class="option-btn skill-preset" data-preset="accuracy">Accuracy</button>
+                </div>
+                <div class="skill-sliders">
+                    <div class="skill-slider-row">
+                        <span class="skill-name">Goal Scoring</span>
+                        <input type="range" class="skill-slider" id="sw-goalScoring" min="0" max="3" step="0.1" value="1.0">
+                        <span class="skill-val" id="sv-goalScoring">1.0</span>
+                    </div>
+                    <div class="skill-slider-row">
+                        <span class="skill-name">Shot Accuracy</span>
+                        <input type="range" class="skill-slider" id="sw-shotAccuracy" min="0" max="3" step="0.1" value="1.0">
+                        <span class="skill-val" id="sv-shotAccuracy">1.0</span>
+                    </div>
+                    <div class="skill-slider-row">
+                        <span class="skill-name">Ball Control</span>
+                        <input type="range" class="skill-slider" id="sw-ballControl" min="0" max="3" step="0.1" value="1.0">
+                        <span class="skill-val" id="sv-ballControl">1.0</span>
+                    </div>
+                    <div class="skill-slider-row">
+                        <span class="skill-name">Positioning</span>
+                        <input type="range" class="skill-slider" id="sw-positioning" min="0" max="3" step="0.1" value="1.0">
+                        <span class="skill-val" id="sv-positioning">1.0</span>
+                    </div>
+                    <div class="skill-slider-row">
+                        <span class="skill-name">Ball Advancement</span>
+                        <input type="range" class="skill-slider" id="sw-ballAdvancement" min="0" max="3" step="0.1" value="1.0">
+                        <span class="skill-val" id="sv-ballAdvancement">1.0</span>
+                    </div>
+                </div>
+            </div>
             <div class="btn-row" style="gap:10px;">
                 <button id="btn-train-start" class="menu-btn primary">Start Training</button>
                 <button id="btn-train-stop" class="menu-btn secondary" disabled>Stop</button>
@@ -234,6 +268,7 @@
             <div class="btn-row" style="gap:10px;margin-top:10px;">
                 <button id="btn-train-reset" class="menu-btn secondary">Reset</button>
                 <button id="btn-train-test" class="menu-btn primary" disabled>Test Play</button>
+                <button id="btn-train-watch" class="menu-btn secondary" disabled>Watch</button>
             </div>
             <div class="btn-row" style="gap:10px;margin-top:10px;">
                 <button id="btn-train-export" class="menu-btn secondary">Download Model</button>
@@ -241,6 +276,73 @@
                 <input type="file" id="train-import-file" accept=".json" style="display:none;">
             </div>
             <button id="btn-back-train" class="menu-btn secondary" style="margin-top:16px;">Back</button>
+        </div>
+    </div>
+
+    <!-- AI vs AI Screen -->
+    <div id="ai-vs-ai-screen" class="screen">
+        <div class="settings-container">
+            <h2>AI vs AI</h2>
+            <div class="setting-group">
+                <label style="color:#e94560">Red Team AI</label>
+                <div class="option-row">
+                    <select id="red-ai-type" class="ai-select">
+                        <option value="rule-based">Rule-based</option>
+                        <option value="trained">Trained AI</option>
+                        <option value="chaser">Chaser</option>
+                        <option value="random">Random</option>
+                        <option value="defender">Defender</option>
+                    </select>
+                </div>
+            </div>
+            <div class="setting-group">
+                <label style="color:#53d8fb">Blue Team AI</label>
+                <div class="option-row">
+                    <select id="blue-ai-type" class="ai-select">
+                        <option value="rule-based" selected>Rule-based</option>
+                        <option value="trained">Trained AI</option>
+                        <option value="chaser">Chaser</option>
+                        <option value="random">Random</option>
+                        <option value="defender">Defender</option>
+                    </select>
+                </div>
+            </div>
+            <div class="setting-group">
+                <label>Team Size</label>
+                <div class="option-row" id="ava-team-size">
+                    <button class="option-btn" data-team-size="1">1v1</button>
+                    <button class="option-btn active" data-team-size="2">2v2</button>
+                    <button class="option-btn" data-team-size="3">3v3</button>
+                    <button class="option-btn" data-team-size="4">4v4</button>
+                </div>
+            </div>
+            <div class="setting-group">
+                <label>Match Duration</label>
+                <div class="option-row" id="ava-duration">
+                    <button class="option-btn" data-duration="120">2 min</button>
+                    <button class="option-btn active" data-duration="180">3 min</button>
+                    <button class="option-btn" data-duration="300">5 min</button>
+                </div>
+            </div>
+            <div class="setting-group">
+                <label>Power-Ups</label>
+                <div class="option-row" id="ava-powerups">
+                    <button class="option-btn active" data-powerups="on">On</button>
+                    <button class="option-btn" data-powerups="off">Off</button>
+                </div>
+            </div>
+            <div class="setting-group">
+                <label>Map</label>
+                <div class="option-row" id="ava-map">
+                    <button class="option-btn" data-map="big">Small</button>
+                    <button class="option-btn active" data-map="classic">Classic</button>
+                    <button class="option-btn" data-map="huge">Huge</button>
+                </div>
+            </div>
+            <div class="btn-row">
+                <button id="btn-back-ava" class="menu-btn secondary">Back</button>
+                <button id="btn-start-ava" class="menu-btn primary">Start Match</button>
+            </div>
         </div>
     </div>
 
@@ -290,6 +392,13 @@
                 <button id="btn-switch" class="action-btn switch-btn">SWAP</button>
                 <button id="btn-kick" class="action-btn kick-btn">KICK</button>
             </div>
+        </div>
+
+        <!-- Speed Controls (spectator mode) -->
+        <div id="speed-controls" class="hidden">
+            <button class="speed-btn active" data-speed="1">1x</button>
+            <button class="speed-btn" data-speed="2">2x</button>
+            <button class="speed-btn" data-speed="4">4x</button>
         </div>
     </div>
 

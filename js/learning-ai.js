@@ -83,94 +83,48 @@ class NeuralNetwork {
     }
 }
 
-// Learning AI controller — drop-in compatible with AIController
+// Learning AI controller — fully NN-controlled, drop-in compatible with AIController
 class LearningAI {
     constructor(nn) {
-        this.nn = nn || new NeuralNetwork([20, 24, 12, 5]);
+        // 22 inputs -> 32 -> 16 -> 5 outputs (moveX, moveY, kick, charge, pull)
+        this.nn = nn || new NeuralNetwork([22, 32, 16, 5]);
         this.fitness = 0;
-        this.targetX = 0;
-        this.targetY = 0;
     }
 
     update(player, ball, field, teammates, opponents, dt) {
         const input = this.buildInput(player, ball, field, opponents);
         const output = this.nn.forward(input);
 
-        // NN controls decisions: kick, charge, and positioning offset near ball
-        const kickSignal = output[2];
-        const chargeRatio = Math.min((output[4] + 1) / 2, 0.7);
+        // NN has FULL control — no hardcoded logic
+        // output[0] = moveX direction (-1 to 1)
+        // output[1] = moveY direction (-1 to 1)
+        // output[2] = kick signal (>0 = kick)
+        // output[3] = charge ratio (mapped 0 to 0.7)
+        // output[4] = pull signal (>0.5 = activate pull)
 
+        const moveX = output[0];
+        const moveY = output[1];
+
+        // Normalize movement to unit length (NN decides direction, physics handles speed)
+        const moveLen = Math.sqrt(moveX * moveX + moveY * moveY);
+        if (moveLen > 0.01) {
+            player.applyInput(moveX / moveLen, moveY / moveLen);
+        }
+
+        // Kick: NN decides when to kick, physics enforces range/cooldown
         const distToBall = Physics.distance(player, ball);
         const kickRange = player.radius + ball.radius + 12;
-        const nearBall = distToBall < kickRange;
-        // --- Role assignment for 2v2+ ---
-        let role = 'attack';
-        if (teammates.length > 1) {
-            let closestTeammateDist = Infinity;
-            for (const t of teammates) {
-                if (t === player) continue;
-                const td = Physics.distance(t, ball);
-                if (td < closestTeammateDist) closestTeammateDist = td;
-            }
-            if (closestTeammateDist < distToBall - 40) {
-                role = 'support';
-            }
+        const doKick = distToBall < kickRange && output[2] > 0;
+        const chargeRatio = Math.min((output[3] + 1) / 2, 0.7);
+
+        // Pull: NN decides when to pull
+        if (output[4] > 0.5) {
+            player.activatePull();
         }
-
-        let moveX = 0, moveY = 0;
-
-        if (role === 'attack') {
-            // Normal attack: chase ball directly
-            const dx = ball.x - player.x;
-            const dy = ball.y - player.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist > 1) {
-                moveX = dx / dist;
-                moveY = dy / dist;
-
-                // Near ball: NN offset for approach angle
-                if (dist < 80) {
-                    const offsetScale = 0.4 * (1 - dist / 80);
-                    moveX += output[0] * offsetScale;
-                    moveY += output[1] * offsetScale;
-                    const len = Math.sqrt(moveX * moveX + moveY * moveY);
-                    if (len > 0.01) { moveX /= len; moveY /= len; }
-                }
-            }
-        } else {
-            // Support role: position between ball and own goal
-            const ownGoalX = player.team === 'red' ? field.x : field.x + field.width;
-            const supportX = (ball.x + ownGoalX) * 0.5;
-            const ballRelY = ball.y - field.centerY;
-            const supportY = field.centerY - ballRelY * 0.5;
-
-            const sdx = supportX - player.x;
-            const sdy = supportY - player.y;
-            const sdist = Math.sqrt(sdx * sdx + sdy * sdy);
-            if (sdist > 5) {
-                moveX = sdx / sdist;
-                moveY = sdy / sdist;
-            }
-
-            // If ball comes close, switch to attacking it
-            if (distToBall < 80) {
-                const dx = ball.x - player.x;
-                const dy = ball.y - player.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                moveX = dx / dist;
-                moveY = dy / dist;
-            }
-        }
-
-        player.applyInput(moveX, moveY);
-
-        // Kick decision
-        const doKick = nearBall && kickSignal > 0.5;
-        const kickCharge = chargeRatio;
 
         return {
             kick: doKick,
-            chargeRatio: kickCharge
+            chargeRatio: chargeRatio
         };
     }
 
@@ -180,11 +134,10 @@ class LearningAI {
         const fx = field.x;
         const fy = field.y;
 
-        // Normalize positions to -1..1 relative to field
+        // Normalize to -1..1 relative to field
         const normX = (x) => ((x - fx) / fw) * 2 - 1;
         const normY = (y) => ((y - fy) / fh) * 2 - 1;
-        const normVx = (v) => v / Physics.MAX_BALL_SPEED;
-        const normVy = (v) => v / Physics.MAX_BALL_SPEED;
+        const normV = (v) => v / Physics.MAX_BALL_SPEED;
 
         // Find nearest opponent
         let nearOpp = opponents[0] || player;
@@ -195,57 +148,44 @@ class LearningAI {
         }
 
         // Goal positions
-        const ownGoalX = player.team === 'red' ? field.x : field.x + field.width;
         const oppGoalX = player.team === 'red' ? field.x + field.width : field.x;
+        const ownGoalX = player.team === 'red' ? field.x : field.x + field.width;
         const goalCenterY = field.goalY + field.goalHeight / 2;
 
-        // Angle from ball to opponent goal
+        // Relative vectors (more useful than absolute positions)
         const toBallX = ball.x - player.x;
         const toBallY = ball.y - player.y;
         const ballDist = Math.sqrt(toBallX * toBallX + toBallY * toBallY);
-        const normBallDist = Math.min(ballDist / (fw * 0.5), 1) * 2 - 1;
 
-        const toGoalX = oppGoalX - ball.x;
-        const toGoalY = goalCenterY - ball.y;
-        const goalDist = Math.sqrt(toGoalX * toGoalX + toGoalY * toGoalY);
-        const goalAngle = Math.atan2(toGoalY, toGoalX) / Math.PI;
+        const toGoalX = oppGoalX - player.x;
+        const toGoalY = goalCenterY - player.y;
 
-        // Angle from player to ball
-        const playerToBallAngle = Math.atan2(toBallY, toBallX) / Math.PI;
-
-        // Is ball between player and opponent goal?
-        const ballBetween = (player.team === 'red')
-            ? (ball.x > player.x && ball.x < oppGoalX) ? 1 : -1
-            : (ball.x < player.x && ball.x > oppGoalX) ? 1 : -1;
-
-        // Distance from opponent to ball (useful for deciding to race)
-        const oppBallDist = Physics.distance(nearOpp, ball);
-        const normOppBallDist = Math.min(oppBallDist / (fw * 0.5), 1) * 2 - 1;
-
-        // Opponent distance from own goal (is goal exposed?)
-        const oppToOwnGoalDist = Math.abs(nearOpp.x - ownGoalX) / fw * 2 - 1;
+        const toOwnGoalX = ownGoalX - player.x;
+        const toOwnGoalY = goalCenterY - player.y;
 
         return new Float32Array([
-            normX(player.x),           // 0: own x
-            normY(player.y),           // 1: own y
-            normVx(player.vx),         // 2: own vx
-            normVy(player.vy),         // 3: own vy
-            normX(ball.x),             // 4: ball x
-            normY(ball.y),             // 5: ball y
-            normVx(ball.vx),           // 6: ball vx
-            normVy(ball.vy),           // 7: ball vy
-            normX(nearOpp.x),          // 8: opponent x
-            normY(nearOpp.y),          // 9: opponent y
-            normVx(nearOpp.vx),        // 10: opponent vx
-            normVy(nearOpp.vy),        // 11: opponent vy
-            normBallDist,              // 12: distance to ball
-            goalAngle,                 // 13: angle from ball to opponent goal
-            Math.min(goalDist / fw, 1) * 2 - 1,  // 14: distance from ball to goal
-            player.team === 'red' ? -1 : 1,       // 15: team side
-            playerToBallAngle,         // 16: angle from player to ball
-            ballBetween,               // 17: is ball between player & goal
-            normOppBallDist,           // 18: opponent distance to ball
-            oppToOwnGoalDist           // 19: opponent distance from own goal
+            normX(player.x),               // 0: own position x
+            normY(player.y),               // 1: own position y
+            normV(player.vx),              // 2: own velocity x
+            normV(player.vy),              // 3: own velocity y
+            (toBallX / fw) * 2,            // 4: relative ball x (direction + distance)
+            (toBallY / fh) * 2,            // 5: relative ball y
+            normV(ball.vx),                // 6: ball velocity x
+            normV(ball.vy),                // 7: ball velocity y
+            Math.min(ballDist / (fw * 0.5), 1) * 2 - 1,  // 8: distance to ball (normalized)
+            (nearOpp.x - player.x) / fw * 2, // 9: relative opponent x
+            (nearOpp.y - player.y) / fh * 2, // 10: relative opponent y
+            normV(nearOpp.vx),             // 11: opponent velocity x
+            normV(nearOpp.vy),             // 12: opponent velocity y
+            (toGoalX / fw) * 2,            // 13: relative enemy goal x
+            (toGoalY / fh) * 2,            // 14: relative enemy goal y
+            (toOwnGoalX / fw) * 2,         // 15: relative own goal x
+            (toOwnGoalY / fh) * 2,         // 16: relative own goal y
+            player.team === 'red' ? -1 : 1, // 17: team side
+            ball.lastKickedBy === player ? 1 : -1, // 18: do I have possession?
+            player.pullCooldown > 0 ? -1 : 1,      // 19: pull available?
+            player.kickCooldown > 0 ? -1 : 1,      // 20: kick available?
+            Physics.distance(nearOpp, ball) / (fw * 0.5) * 2 - 1  // 21: opponent distance to ball
         ]);
     }
 
@@ -254,10 +194,20 @@ class LearningAI {
     }
 }
 
+// Default skill weights for fitness calculation
+const DEFAULT_SKILL_WEIGHTS = {
+    goalScoring: 1.0,
+    shotAccuracy: 1.0,
+    ballControl: 1.0,
+    positioning: 1.0,
+    ballAdvancement: 1.0,
+};
+
 // Headless simulation for fast training
 class HeadlessMatch {
-    constructor(field) {
+    constructor(field, skillWeights) {
         this.field = field;
+        this.skillWeights = skillWeights || DEFAULT_SKILL_WEIGHTS;
         this.ball = new Ball(field.centerX, field.centerY);
         this.redPlayer = new Player(field.x + field.width * 0.25, field.centerY, 'red', false);
         this.bluePlayer = new Player(field.x + field.width * 0.75, field.centerY, 'blue', false);
@@ -267,17 +217,15 @@ class HeadlessMatch {
         this.timeElapsed = 0;
         this.matchDuration = 12000; // 12 seconds per training match
         this.finished = false;
-
-        // Track fitness components
-        this.redBallTime = 0;
-        this.blueBallTime = 0;
-        this.redTotalBallDist = 0;
-        this.blueTotalBallDist = 0;
         this.steps = 0;
 
-        // Enhanced fitness tracking
-        this.redStats = { shotsOnGoal: 0, ballAdvancement: 0, ownHalfTime: 0 };
-        this.blueStats = { shotsOnGoal: 0, ballAdvancement: 0, ownHalfTime: 0 };
+        // Per-skill accumulators for each side
+        this.redSkills = { goalScoring: 0, shotAccuracy: 0, ballControl: 0, positioning: 0, ballAdvancement: 0 };
+        this.blueSkills = { goalScoring: 0, shotAccuracy: 0, ballControl: 0, positioning: 0, ballAdvancement: 0 };
+
+        // Track previous ball velocity to detect kicks
+        this._prevBallVx = 0;
+        this._prevBallVy = 0;
     }
 
     reset() {
@@ -307,21 +255,49 @@ class HeadlessMatch {
         const dt = 33.34; // simulate at 30fps (2x step for speed)
         Physics.dtRatio = (dt / 16.67) * Physics.GAME_SPEED;
 
+        // Save ball state before kicks to detect kick direction
+        this._prevBallVx = this.ball.vx;
+        this._prevBallVy = this.ball.vy;
+
         // AI decisions
         const redAction = redAI.update(this.redPlayer, this.ball, this.field, [this.redPlayer], [this.bluePlayer], dt);
         const blueAction = blueAI.update(this.bluePlayer, this.ball, this.field, [this.bluePlayer], [this.redPlayer], dt);
 
-        // Execute kicks
+        // Execute kicks and track kick direction for shot accuracy
         if (redAction.kick) {
             this.redPlayer.kick(this.ball, redAction.chargeRatio || 0.3);
+            this._trackKickDirection('red');
         }
         if (blueAction.kick) {
             this.bluePlayer.kick(this.ball, blueAction.chargeRatio || 0.3);
+            this._trackKickDirection('blue');
         }
 
         // Update entities
         for (const p of this.players) p.update(dt);
         this.ball.update(dt);
+
+        // Pull physics (same as game.js)
+        const pullMaxRange = 150;
+        for (const p of this.players) {
+            if (p.pullActive) {
+                const dist = Physics.distance(p, this.ball);
+                if (dist >= pullMaxRange) {
+                    p.pullActive = false;
+                    p.pullCooldown = p.pullCooldownTime;
+                } else if (dist > p.radius + this.ball.radius + 5) {
+                    const dx = p.x - this.ball.x;
+                    const dy = p.y - this.ball.y;
+                    const n = Physics.normalize(dx, dy);
+                    const falloff = 1 - (dist / pullMaxRange);
+                    const pullStrength = 0.25 * falloff * Physics.dtRatio;
+                    this.ball.vx += n.x * pullStrength;
+                    this.ball.vy += n.y * pullStrength;
+                    this.ball.vx *= Math.pow(0.985, Physics.dtRatio);
+                    this.ball.vy *= Math.pow(0.985, Physics.dtRatio);
+                }
+            }
+        }
 
         // Collisions
         Physics.resolveCircleCollision(this.redPlayer, this.ball, Physics.PLAYER_BOUNCE, Physics.BALL_BOUNCE);
@@ -334,44 +310,73 @@ class HeadlessMatch {
         }
         Physics.constrainToField(this.ball, this.field, false);
 
-        // Track fitness metrics
+        // --- Per-frame skill tracking (all skills target ~0-100 range over a match) ---
         const redDist = Physics.distance(this.redPlayer, this.ball);
         const blueDist = Physics.distance(this.bluePlayer, this.ball);
-        this.redTotalBallDist += redDist;
-        this.blueTotalBallDist += blueDist;
-        if (redDist < blueDist) this.redBallTime += dt;
-        else this.blueBallTime += dt;
+        const fw = this.field.width;
+        const midX = this.field.x + fw / 2;
         this.steps++;
 
-        // Enhanced: track shots on goal (ball moving toward opponent goal)
-        const midX = this.field.x + this.field.width / 2;
-        const goalTop = this.field.goalY;
-        const goalBottom = this.field.goalY + this.field.goalHeight;
-        const ballSpeed = Math.sqrt(this.ball.vx * this.ball.vx + this.ball.vy * this.ball.vy);
+        // Ball Control: always reward being close, always penalize being far
+        // This creates a continuous gradient that pulls the AI toward the ball at all times
+        const redKickRange = this.redPlayer.radius + this.ball.radius + 21;
+        const blueKickRange = this.bluePlayer.radius + this.ball.radius + 21;
 
-        // Red shoots right, blue shoots left
-        if (this.ball.vx > 3 && ballSpeed > 5 && this.ball.y > goalTop && this.ball.y < goalBottom) {
-            if (this.ball.x > midX) this.redStats.shotsOnGoal += 0.01;
-        }
-        if (this.ball.vx < -3 && ballSpeed > 5 && this.ball.y > goalTop && this.ball.y < goalBottom) {
-            if (this.ball.x < midX) this.blueStats.shotsOnGoal += 0.01;
-        }
+        // Continuous distance-based reward: closer = more positive, far = negative
+        // Range: +0.5 (touching) down to -0.15 (max distance)
+        const redCloseness = 1 - Math.min(redDist / (fw * 0.5), 1); // 1=on ball, 0=half field away
+        this.redSkills.ballControl += redCloseness * 0.5 - 0.15;
+        const blueCloseness = 1 - Math.min(blueDist / (fw * 0.5), 1);
+        this.blueSkills.ballControl += blueCloseness * 0.5 - 0.15;
 
-        // Ball advancement: how far ball is in opponent half
-        const ballProgressRed = (this.ball.x - this.field.x) / this.field.width; // 0..1, higher = closer to blue goal
-        const ballProgressBlue = 1 - ballProgressRed;
-        this.redStats.ballAdvancement += ballProgressRed * 0.001;
-        this.blueStats.ballAdvancement += ballProgressBlue * 0.001;
+        // Bonus for actually touching the ball (kick range)
+        if (redDist < redKickRange) this.redSkills.ballControl += 0.3;
+        if (blueDist < blueKickRange) this.blueSkills.ballControl += 0.3;
 
-        // Penalize staying in own half
-        if (this.redPlayer.x < midX) this.redStats.ownHalfTime += 0.001;
-        if (this.bluePlayer.x > midX) this.blueStats.ownHalfTime += 0.001;
+        // Possession bonus only when also near the ball (prevents kick-and-run-away)
+        if (this.ball.lastKickedBy === this.redPlayer && redDist < 100) this.redSkills.ballControl += 0.2;
+        if (this.ball.lastKickedBy === this.bluePlayer && blueDist < 100) this.blueSkills.ballControl += 0.2;
 
-        // Check goals
+        // Positioning: reward being goal-side (between ball and own goal) on defense
+        const redOwnGoalX = this.field.x;
+        const blueOwnGoalX = this.field.x + fw;
+        const redGoalSide = this.redPlayer.x < this.ball.x ? 1 : 0;
+        const redInOwnHalf = this.redPlayer.x < midX;
+        if (redInOwnHalf && redGoalSide) this.redSkills.positioning += 0.15;
+        else if (!redInOwnHalf && this.redPlayer.x > this.ball.x) this.redSkills.positioning += 0.1;
+        else this.redSkills.positioning -= 0.05;
+
+        const blueGoalSide = this.bluePlayer.x > this.ball.x ? 1 : 0;
+        const blueInOwnHalf = this.bluePlayer.x > midX;
+        if (blueInOwnHalf && blueGoalSide) this.blueSkills.positioning += 0.15;
+        else if (!blueInOwnHalf && this.bluePlayer.x < this.ball.x) this.blueSkills.positioning += 0.1;
+        else this.blueSkills.positioning -= 0.05;
+
+        // Ball Advancement: reward ball position in opponent half (scaled to match other skills)
+        const ballProgressRed = (this.ball.x - this.field.x) / fw;
+        this.redSkills.ballAdvancement += (ballProgressRed - 0.5) * 0.3;
+        this.blueSkills.ballAdvancement += (0.5 - ballProgressRed) * 0.3;
+
+        // Check goals — reward scales with how deep the ball was in opponent half
+        // Scoring from opponent's side = bigger reward, own-half lucky bounce = smaller
         const scorer = Physics.checkGoal(this.ball, this.field);
         if (scorer) {
-            if (scorer === 'red') this.redScore++;
-            else this.blueScore++;
+            // ballProgressRed: 0 = red's goal, 1 = blue's goal
+            // For red scoring (ball at blue goal, progress~1): bonus = high
+            // For blue scoring (ball at red goal, progress~0): bonus = high
+            const baseReward = 30;
+            const positionBonus = 30; // max extra for deep penetration
+            if (scorer === 'red') {
+                this.redScore++;
+                const depth = ballProgressRed; // 0-1, higher = deeper in blue half
+                this.redSkills.goalScoring += baseReward + positionBonus * depth;
+                this.blueSkills.goalScoring -= 20;
+            } else {
+                this.blueScore++;
+                const depth = 1 - ballProgressRed; // 0-1, higher = deeper in red half
+                this.blueSkills.goalScoring += baseReward + positionBonus * depth;
+                this.redSkills.goalScoring -= 20;
+            }
             this.reset();
         }
 
@@ -381,6 +386,37 @@ class HeadlessMatch {
         }
     }
 
+    // Track kick direction: reward kicking toward enemy goal, penalize toward own goal
+    _trackKickDirection(team) {
+        const bvx = this.ball.vx;
+        const bvy = this.ball.vy;
+        const speed = Math.sqrt(bvx * bvx + bvy * bvy);
+        if (speed < 2) return; // too slow to matter
+
+        const skills = team === 'red' ? this.redSkills : this.blueSkills;
+        const enemyGoalX = team === 'red' ? this.field.x + this.field.width : this.field.x;
+        const ownGoalX = team === 'red' ? this.field.x : this.field.x + this.field.width;
+        const goalCenterY = this.field.goalY + this.field.goalHeight / 2;
+
+        // Direction to enemy goal
+        const toEnemyX = enemyGoalX - this.ball.x;
+        const toEnemyY = goalCenterY - this.ball.y;
+        const toEnemyDist = Math.sqrt(toEnemyX * toEnemyX + toEnemyY * toEnemyY);
+
+        // Direction to own goal
+        const toOwnX = ownGoalX - this.ball.x;
+        const toOwnY = goalCenterY - this.ball.y;
+        const toOwnDist = Math.sqrt(toOwnX * toOwnX + toOwnY * toOwnY);
+
+        // Dot product with ball velocity (normalized)
+        const dotEnemy = (bvx * toEnemyX + bvy * toEnemyY) / (speed * Math.max(toEnemyDist, 1));
+        const dotOwn = (bvx * toOwnX + bvy * toOwnY) / (speed * Math.max(toOwnDist, 1));
+
+        // Reward kicking toward enemy goal, penalize toward own goal
+        if (dotEnemy > 0.3) skills.shotAccuracy += 5 * dotEnemy;
+        if (dotOwn > 0.3) skills.shotAccuracy -= 10 * dotOwn;
+    }
+
     // Run entire match, return fitness for each side
     run(redAI, blueAI) {
         this.reset();
@@ -388,55 +424,27 @@ class HeadlessMatch {
         this.blueScore = 0;
         this.timeElapsed = 0;
         this.finished = false;
-        this.redBallTime = 0;
-        this.blueBallTime = 0;
-        this.redTotalBallDist = 0;
-        this.blueTotalBallDist = 0;
         this.steps = 0;
-        this.redStats = { shotsOnGoal: 0, ballAdvancement: 0, ownHalfTime: 0 };
-        this.blueStats = { shotsOnGoal: 0, ballAdvancement: 0, ownHalfTime: 0 };
+        this.redSkills = { goalScoring: 0, shotAccuracy: 0, ballControl: 0, positioning: 0, ballAdvancement: 0 };
+        this.blueSkills = { goalScoring: 0, shotAccuracy: 0, ballControl: 0, positioning: 0, ballAdvancement: 0 };
 
         while (!this.finished) {
             this.step(redAI, blueAI);
         }
 
-        const avgRedDist = this.redTotalBallDist / Math.max(this.steps, 1);
-        const avgBlueDist = this.blueTotalBallDist / Math.max(this.steps, 1);
-        const maxDist = this.field.width * 0.5;
-
         return {
-            redFitness: this.calcFitness(this.redScore, this.blueScore, avgRedDist, maxDist, this.redBallTime, 'red'),
-            blueFitness: this.calcFitness(this.blueScore, this.redScore, avgBlueDist, maxDist, this.blueBallTime, 'blue'),
+            redFitness: this.calcFitness(this.redSkills),
+            blueFitness: this.calcFitness(this.blueSkills),
         };
     }
 
-    calcFitness(goalsFor, goalsAgainst, avgDist, maxDist, possTime, side) {
-        const stats = side === 'red' ? this.redStats : this.blueStats;
-
-        // Proximity multiplier: 0.1 (far from ball) to 1.0 (on top of ball)
-        // This GATES all other rewards — you can't score high fitness by camping
-        const proxFactor = 0.1 + 0.9 * Math.pow(1 - Math.min(avgDist / maxDist, 1), 1.5);
-
-        // Base fitness from behavior
-        let f = 0;
-        f += goalsFor * 100;                         // huge goal reward
-        f += Math.pow(goalsFor, 2) * 25;             // accelerating multi-goal bonus
-        f -= goalsAgainst * 15;                      // conceding penalty (not too harsh early on)
-        f += (stats.shotsOnGoal || 0) * 12;          // shots on goal
-        f += (stats.ballAdvancement || 0) * 6;       // pushing ball forward
-        f += (possTime / this.matchDuration) * 20;   // possession time
-
-        // Apply proximity gate — all rewards scaled by how close you stay to ball
-        f *= proxFactor;
-
-        // Small additive proximity bonus to bootstrap learning (always rewarded)
-        f += (1 - avgDist / maxDist) * 50;
-
-        // Goal differential bonus (also gated)
-        const diff = goalsFor - goalsAgainst;
-        if (diff > 0) f += diff * 25 * proxFactor;
-
-        return f;
+    calcFitness(skills) {
+        const w = this.skillWeights;
+        let fitness = 0;
+        for (const skill in skills) {
+            fitness += skills[skill] * (w[skill] || 1.0);
+        }
+        return fitness;
     }
 }
 
@@ -526,13 +534,16 @@ class EvolutionTrainer {
         this._batchSize = 5; // matches per training tick
         this.onProgress = null; // callback(gen, bestFitness)
 
+        // Skill weights for fitness calculation (user-adjustable)
+        this.skillWeights = { ...DEFAULT_SKILL_WEIGHTS };
+
         // Stagnation tracking for adaptive mutation
         this._stagnationCounter = 0;
         this._lastBestFitness = -Infinity;
         this._stagnationThreshold = 20; // generations without improvement to trigger boost
 
-        // Create a virtual field for headless matches (800x500 canvas sim)
-        this.field = new Field(800, 500, 'classic');
+        // Create a virtual field for headless matches (matches classic map: 1500x1000)
+        this.field = new Field(1500, 1000, 'classic');
 
         // Diverse sparring opponents to prevent strategy collapse
         this.sparringOpponents = [
@@ -648,6 +659,10 @@ class EvolutionTrainer {
         }
     }
 
+    setSkillWeights(weights) {
+        this.skillWeights = { ...DEFAULT_SKILL_WEIGHTS, ...weights };
+    }
+
     resetTraining() {
         this.stop();
         this.generation = 0;
@@ -709,7 +724,7 @@ class EvolutionTrainer {
         this._pendingGen = true;
 
         const opponents = this._buildMatchups();
-        const fieldData = { w: 800, h: 500, mapType: 'classic' };
+        const fieldData = { w: 1500, h: 1000, mapType: 'classic' };
 
         // Self-play pairs
         let selfPlayPairs = null;
@@ -740,14 +755,15 @@ class EvolutionTrainer {
                     opponents,
                     field: fieldData,
                     generation: this.generation,
-                    selfPlayPairs: selfPlayPairs
+                    selfPlayPairs: selfPlayPairs,
+                    skillWeights: this.skillWeights
                 }
             });
         }
     }
 
     runGeneration() {
-        const match = new HeadlessMatch(this.field);
+        const match = new HeadlessMatch(this.field, this.skillWeights);
 
         // Reset fitness
         for (const agent of this.population) {

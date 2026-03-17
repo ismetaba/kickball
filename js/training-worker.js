@@ -9,6 +9,7 @@ self.onmessage = function(e) {
 
     if (type === 'evaluate') {
         const field = new Field(data.field.w, data.field.h, data.field.mapType);
+        const skillWeights = data.skillWeights || DEFAULT_SKILL_WEIGHTS;
         const results = [];
 
         // Build a lookup of all agent weights for self-play
@@ -20,7 +21,7 @@ self.onmessage = function(e) {
         }
 
         for (const agentData of data.agents) {
-            const nn = new NeuralNetwork([20, 24, 12, 5]);
+            const nn = new NeuralNetwork([22, 32, 16, 5]);
             nn.deserialize(agentData.weights);
             const agent = new LearningAI(nn);
             agent.fitness = 0;
@@ -29,7 +30,7 @@ self.onmessage = function(e) {
             // Sparring matches against scripted/learned opponents
             for (const oppData of data.opponents) {
                 const opp = createOpponent(oppData);
-                const match = new HeadlessMatch(field);
+                const match = new HeadlessMatch(field, skillWeights);
 
                 if (oppData.playAsBlue) {
                     const result = match.run(opp, agent);
@@ -48,10 +49,10 @@ self.onmessage = function(e) {
                         const partnerIdx = pair.redIndex === agentData.index ? pair.blueIndex : pair.redIndex;
                         const partnerWeights = allAgentWeights[partnerIdx];
                         if (partnerWeights) {
-                            const partnerNN = new NeuralNetwork([20, 24, 12, 5]);
+                            const partnerNN = new NeuralNetwork([22, 32, 16, 5]);
                             partnerNN.deserialize(partnerWeights);
                             const partner = new LearningAI(partnerNN);
-                            const match = new HeadlessMatch(field);
+                            const match = new HeadlessMatch(field, skillWeights);
 
                             if (pair.redIndex === agentData.index) {
                                 const result = match.run(agent, partner);
@@ -82,7 +83,7 @@ function createOpponent(oppData) {
         case 'easy': return new AIController('easy');
         case 'medium': return new AIController('medium');
         case 'learned':
-            const nn = new NeuralNetwork([20, 24, 12, 5]);
+            const nn = new NeuralNetwork([22, 32, 16, 5]);
             nn.deserialize(oppData.weights);
             return new LearningAI(nn);
         default: return new ChaserAI();

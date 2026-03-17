@@ -127,7 +127,7 @@ class Player {
         const dy = ball.y - this.y;
         const n = Physics.normalize(dx, dy);
         // Low charge = moderate, high charge = strong
-        const minForce = this.getKickForce() * 0.6;
+        const minForce = this.getKickForce() * 0.75;
         const maxForce = Physics.POWER_KICK_FORCE;
         const curve = Math.min(chargeRatio, 1);
         const force = minForce + (maxForce - minForce) * curve;
@@ -283,31 +283,8 @@ class Field {
 
         switch (this.mapType) {
             case 'big':
-                widthRatio = 0.92;
-                heightRatio = 0.82;
-                break;
-            case 'futsal':
-                widthRatio = 0.78;
-                heightRatio = 0.65;
-                break;
-            case 'ice':
                 widthRatio = 0.85;
                 heightRatio = 0.75;
-                this.frictionMod = 0.6;       // Very slippery
-                this.playerFrictionMod = 0.5;  // Players slide more
-                this.bounceMod = 1.3;          // Bouncier walls
-                break;
-            case 'volcano':
-                widthRatio = 0.82;
-                heightRatio = 0.72;
-                this.frictionMod = 1.2;        // Slightly sticky
-                this.bounceMod = 1.8;          // Super bouncy walls
-                break;
-            case 'neon':
-                widthRatio = 0.72;
-                heightRatio = 0.60;
-                this.frictionMod = 0.85;       // Slightly slippery
-                this.bounceMod = 1.2;          // Moderate bounce
                 break;
             default: // classic
                 widthRatio = 0.85;

@@ -20,6 +20,7 @@ class UI {
         this.setupGameEvents();
         this.setupTournament();
         this.setupOnlineEvents();
+        this.setupAIvsAI();
 
         // Initialize audio on first user interaction (required by mobile browsers)
         const initAudio = () => {
@@ -86,9 +87,48 @@ class UI {
             this.showScreen('menu');
         });
 
+        // Skill weight sliders
+        const skillNames = ['goalScoring', 'shotAccuracy', 'ballControl', 'positioning', 'ballAdvancement'];
+        for (const skill of skillNames) {
+            const slider = document.getElementById('sw-' + skill);
+            const label = document.getElementById('sv-' + skill);
+            if (slider) {
+                slider.addEventListener('input', () => {
+                    label.textContent = parseFloat(slider.value).toFixed(1);
+                    this._syncSkillWeights();
+                });
+            }
+        }
+        // Skill presets
+        const presets = {
+            balanced: { goalScoring: 1.0, shotAccuracy: 1.0, ballControl: 1.0, positioning: 1.0, ballAdvancement: 1.0 },
+            offense: { goalScoring: 2.0, shotAccuracy: 2.0, ballControl: 0.5, positioning: 0.3, ballAdvancement: 1.5 },
+            defense: { goalScoring: 0.5, shotAccuracy: 0.5, ballControl: 1.5, positioning: 2.5, ballAdvancement: 0.3 },
+            accuracy: { goalScoring: 1.0, shotAccuracy: 3.0, ballControl: 1.0, positioning: 0.5, ballAdvancement: 0.5 },
+        };
+        for (const btn of document.querySelectorAll('.skill-preset')) {
+            btn.addEventListener('click', () => {
+                const preset = presets[btn.dataset.preset];
+                if (!preset) return;
+                for (const skill of skillNames) {
+                    const slider = document.getElementById('sw-' + skill);
+                    const label = document.getElementById('sv-' + skill);
+                    if (slider) {
+                        slider.value = preset[skill];
+                        label.textContent = preset[skill].toFixed(1);
+                    }
+                }
+                this._syncSkillWeights();
+                // Highlight active preset
+                document.querySelectorAll('.skill-preset').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+            });
+        }
+
         document.getElementById('btn-train-start').addEventListener('click', () => {
             this._trainStartTime = performance.now();
             this._trainStartGen = Trainer.generation;
+            this._syncSkillWeights();
             Trainer.onProgress = (gen, fit) => this.updateTrainUI(gen, fit);
             Trainer.start();
             this.updateTrainButtons(true);
@@ -98,6 +138,7 @@ class UI {
         document.getElementById('btn-train-stop').addEventListener('click', () => {
             Trainer.stop();
             this.updateTrainButtons(false);
+            this.updateTrainUI();
             document.getElementById('train-status').textContent = 'Stopped';
         });
 
@@ -106,6 +147,7 @@ class UI {
             this.updateTrainUI(0, 0);
             document.getElementById('train-status').textContent = 'Reset';
             document.getElementById('btn-train-test').disabled = true;
+            document.getElementById('btn-train-watch').disabled = true;
         });
 
         // Export model as JSON download
@@ -152,7 +194,7 @@ class UI {
 
         document.getElementById('btn-train-test').addEventListener('click', () => {
             // Start a quick match with the learned AI
-            this.game.settings.teamSize = 2;
+            this.game.settings.teamSize = 1;
             this.game.settings.difficulty = 'expert';
             this.game.settings.duration = 120;
             this.game.settings.goalLimit = 5;
@@ -167,6 +209,77 @@ class UI {
             if (!this.controls) {
                 this.controls = new Controls(this.game);
             }
+        });
+
+        // Watch: AI vs AI match with trained model vs scripted opponent
+        document.getElementById('btn-train-watch').addEventListener('click', () => {
+            if (!Trainer.hasTrainedAgent()) return;
+            this.game.settings.teamSize = 1;
+            this.game.settings.duration = 120;
+            this.game.settings.goalLimit = 5;
+            this.game.settings.powerups = false;
+            this.game.settings.map = 'classic';
+            this.game.practiceMode = false;
+            this.showScreen('game');
+            document.getElementById('red-score').textContent = '0';
+            document.getElementById('blue-score').textContent = '0';
+            document.getElementById('timer').textContent = '2:00';
+            document.getElementById('touch-controls').style.display = 'none';
+            document.getElementById('speed-controls').classList.remove('hidden');
+            // Trained AI (red) vs expert scripted AI (blue)
+            this.game.startAIvsAI('trained', 'expert');
+            if (!this.controls) {
+                this.controls = new Controls(this.game);
+            }
+        });
+    }
+
+    setupAIvsAI() {
+        document.getElementById('btn-ai-vs-ai').addEventListener('click', () => {
+            this.showScreen('ai-vs-ai');
+            // Disable trained option if no model
+            const hasTrained = typeof Trainer !== 'undefined' && Trainer.hasTrainedAgent();
+            document.querySelectorAll('#red-ai-type option[value="trained"], #blue-ai-type option[value="trained"]')
+                .forEach(opt => opt.disabled = !hasTrained);
+        });
+
+        document.getElementById('btn-back-ava').addEventListener('click', () => {
+            this.showScreen('menu');
+        });
+
+        document.getElementById('btn-start-ava').addEventListener('click', () => {
+            Sound.uiStart();
+            const redType = document.getElementById('red-ai-type').value;
+            const blueType = document.getElementById('blue-ai-type').value;
+
+            this.game.practiceMode = false;
+            this.showScreen('game');
+            document.getElementById('red-score').textContent = '0';
+            document.getElementById('blue-score').textContent = '0';
+
+            const secs = this.game.settings.duration;
+            const m = Math.floor(secs / 60);
+            const s = secs % 60;
+            document.getElementById('timer').textContent = `${m}:${s.toString().padStart(2, '0')}`;
+
+            // Hide touch controls, show speed controls
+            document.getElementById('touch-controls').style.display = 'none';
+            document.getElementById('speed-controls').classList.remove('hidden');
+
+            this.game.startAIvsAI(redType, blueType);
+
+            if (!this.controls) {
+                this.controls = new Controls(this.game);
+            }
+        });
+
+        // Speed control buttons
+        document.querySelectorAll('.speed-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                this.game.setSpectatorSpeed(parseInt(btn.dataset.speed));
+            });
         });
     }
 
@@ -237,6 +350,7 @@ class UI {
                 this.showScreen('menu');
                 return;
             }
+            this._restoreFromSpectator();
             this.game.quit();
             this.showScreen('menu');
         });
@@ -265,10 +379,20 @@ class UI {
                 this.showScreen('menu');
                 return;
             }
+            this._restoreFromSpectator();
             this.game.quit();
             document.getElementById('result-overlay').classList.add('hidden');
             this.showScreen('menu');
         });
+    }
+
+    _restoreFromSpectator() {
+        document.getElementById('touch-controls').style.display = '';
+        document.getElementById('speed-controls').classList.add('hidden');
+        // Reset speed buttons
+        document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
+        const btn1x = document.querySelector('.speed-btn[data-speed="1"]');
+        if (btn1x) btn1x.classList.add('active');
     }
 
     startLocal1v1() {
@@ -707,8 +831,10 @@ class UI {
                 document.getElementById('train-status').textContent = `Training... ${speed} gen/s`;
             }
         }
-        // Enable test button if we have a trained agent
-        document.getElementById('btn-train-test').disabled = !Trainer.hasTrainedAgent();
+        // Enable test/watch buttons if we have a trained agent
+        const hasTrained = Trainer.hasTrainedAgent();
+        document.getElementById('btn-train-test').disabled = !hasTrained;
+        document.getElementById('btn-train-watch').disabled = !hasTrained;
         // Enable learned difficulty button
         const learnedBtn = document.getElementById('btn-diff-learned');
         if (learnedBtn) {
@@ -720,6 +846,15 @@ class UI {
     updateTrainButtons(isTraining) {
         document.getElementById('btn-train-start').disabled = isTraining;
         document.getElementById('btn-train-stop').disabled = !isTraining;
+    }
+
+    _syncSkillWeights() {
+        const weights = {};
+        for (const skill of ['goalScoring', 'shotAccuracy', 'ballControl', 'positioning', 'ballAdvancement']) {
+            const slider = document.getElementById('sw-' + skill);
+            if (slider) weights[skill] = parseFloat(slider.value);
+        }
+        Trainer.setSkillWeights(weights);
     }
 
     resetLobby() {

@@ -891,15 +891,7 @@ class Renderer {
 
     drawConfetti() {
         const ctx = this.ctx;
-
-        // Screen flash on goal
-        if (this.goalFlashTimer > 0) {
-            const alpha = (this.goalFlashTimer / 500) * 0.3;
-            ctx.fillStyle = this.goalFlashTeam === 'red'
-                ? `rgba(233, 69, 96, ${alpha})`
-                : `rgba(83, 216, 251, ${alpha})`;
-            ctx.fillRect(0, 0, this.w, this.h);
-        }
+        // Goal flash is drawn in screen space by game.render() instead
 
         // setTransform instead of save/restore per particle
         const dpr = Math.min(window.devicePixelRatio || 1, 2);

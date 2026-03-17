@@ -49,6 +49,11 @@ class Game {
         this.isLocal1v1 = false;
         this.humanPlayer2 = null;
 
+        // AI vs AI spectator
+        this.isSpectator = false;
+        this._aiVsAiTypes = null;
+        this._baseGameSpeed = Physics.GAME_SPEED;
+
         // Online multiplayer state
         this.isOnline = false;
         this.isHost = false;
@@ -73,6 +78,10 @@ class Game {
         this._redTeam = [];
         this._blueTeam = [];
 
+        // Virtual field resolution — depends on map type
+        this.VIRTUAL_W = 800;
+        this.VIRTUAL_H = 500;
+
         window.addEventListener('resize', () => this.onResize());
     }
 
@@ -81,11 +90,36 @@ class Game {
         this._blueTeam = this.players.filter(p => p.team === 'blue');
     }
 
+    _setVirtualSize(mapType) {
+        if (mapType === 'big') {
+            this.VIRTUAL_W = 800;
+            this.VIRTUAL_H = 500;
+            this.cameraZoom = 1;
+        } else if (mapType === 'huge') {
+            this.VIRTUAL_W = 2400;
+            this.VIRTUAL_H = 1600;
+            this.cameraZoom = 1.8; // zoom in — show portion of field around player
+        } else {
+            // Classic
+            this.VIRTUAL_W = 1500;
+            this.VIRTUAL_H = 1000;
+            this.cameraZoom = 1;
+        }
+        this._cameraX = this.VIRTUAL_W / 2;
+        this._cameraY = this.VIRTUAL_H / 2;
+    }
+
+    _updateFieldViewScale() {
+        const s = Math.min(this.renderer.w / this.VIRTUAL_W, this.renderer.h / this.VIRTUAL_H);
+        this.renderer.fieldViewScale = s;
+        this.renderer.fieldViewOffsetX = (this.renderer.w - this.VIRTUAL_W * s) / 2;
+        this.renderer.fieldViewOffsetY = (this.renderer.h - this.VIRTUAL_H * s) / 2;
+    }
+
     onResize() {
         if (!this.isRunning) return;
         this.renderer.resize();
-        this.field.update(this.renderer.w, this.renderer.h);
-        this.repositionEntities();
+        this._updateFieldViewScale();
     }
 
     repositionEntities() {
@@ -142,6 +176,10 @@ class Game {
                 BALL_FRICTION: Physics.BALL_FRICTION,
                 WALL_BOUNCE: Physics.WALL_BOUNCE,
                 FRICTION: Physics.FRICTION,
+                KICK_FORCE: Physics.KICK_FORCE,
+                POWER_KICK_FORCE: Physics.POWER_KICK_FORCE,
+                MAX_BALL_SPEED: Physics.MAX_BALL_SPEED,
+                MAX_PLAYER_SPEED: Physics.MAX_PLAYER_SPEED,
             };
         }
         // Apply map modifiers
@@ -149,6 +187,19 @@ class Game {
         Physics.BALL_FRICTION = 1 - (1 - this._basePhysics.BALL_FRICTION) * f.frictionMod;
         Physics.WALL_BOUNCE = this._basePhysics.WALL_BOUNCE * f.bounceMod;
         Physics.FRICTION = 1 - (1 - this._basePhysics.FRICTION) * f.playerFrictionMod;
+
+        // Scale kick power and speeds for larger maps
+        if (this.settings.map === 'huge') {
+            Physics.KICK_FORCE = this._basePhysics.KICK_FORCE * 1.4;
+            Physics.POWER_KICK_FORCE = this._basePhysics.POWER_KICK_FORCE * 1.4;
+            Physics.MAX_BALL_SPEED = this._basePhysics.MAX_BALL_SPEED * 1.5;
+            Physics.MAX_PLAYER_SPEED = this._basePhysics.MAX_PLAYER_SPEED * 1.3;
+        } else {
+            Physics.KICK_FORCE = this._basePhysics.KICK_FORCE;
+            Physics.POWER_KICK_FORCE = this._basePhysics.POWER_KICK_FORCE;
+            Physics.MAX_BALL_SPEED = this._basePhysics.MAX_BALL_SPEED;
+            Physics.MAX_PLAYER_SPEED = this._basePhysics.MAX_PLAYER_SPEED;
+        }
     }
 
     resetMapPhysics() {
@@ -156,12 +207,18 @@ class Game {
             Physics.BALL_FRICTION = this._basePhysics.BALL_FRICTION;
             Physics.WALL_BOUNCE = this._basePhysics.WALL_BOUNCE;
             Physics.FRICTION = this._basePhysics.FRICTION;
+            Physics.KICK_FORCE = this._basePhysics.KICK_FORCE;
+            Physics.POWER_KICK_FORCE = this._basePhysics.POWER_KICK_FORCE;
+            Physics.MAX_BALL_SPEED = this._basePhysics.MAX_BALL_SPEED;
+            Physics.MAX_PLAYER_SPEED = this._basePhysics.MAX_PLAYER_SPEED;
         }
     }
 
     startMatch() {
         this.renderer.resize();
-        this.field = new Field(this.renderer.w, this.renderer.h, this.settings.map);
+        this._setVirtualSize(this.settings.map);
+        this._updateFieldViewScale();
+        this.field = new Field(this.VIRTUAL_W, this.VIRTUAL_H, this.settings.map);
         this.ball = new Ball(this.field.centerX, this.field.centerY);
 
         this.players = [];
@@ -224,9 +281,84 @@ class Game {
         this.loop();
     }
 
+    createAI(type) {
+        switch (type) {
+            case 'trained':   return Trainer.getBestAgent();
+            case 'chaser':    return new ChaserAI();
+            case 'random':    return new RandomAI();
+            case 'defender':  return new DefenderAI();
+            case 'rule-based':
+            default:          return new AIController(this.settings.difficulty || 'normal');
+        }
+    }
+
+    startAIvsAI(redType, blueType) {
+        this.renderer.resize();
+        this._setVirtualSize(this.settings.map);
+        this._updateFieldViewScale();
+        this.field = new Field(this.VIRTUAL_W, this.VIRTUAL_H, this.settings.map);
+        this.ball = new Ball(this.field.centerX, this.field.centerY);
+
+        this.players = [];
+        this.aiControllers = [];
+        this.humanPlayer = null;
+        this.isSpectator = true;
+        this._aiVsAiTypes = { red: redType, blue: blueType };
+        this._baseGameSpeed = Physics.GAME_SPEED;
+
+        const positions = this.getSpawnPositions();
+
+        for (let i = 0; i < this.settings.teamSize; i++) {
+            const p = new Player(positions.red[i].x, positions.red[i].y, 'red', false);
+            this.players.push(p);
+            this.aiControllers.push({ player: p, ai: this.createAI(redType) });
+        }
+
+        for (let i = 0; i < this.settings.teamSize; i++) {
+            const p = new Player(positions.blue[i].x, positions.blue[i].y, 'blue', false);
+            this.players.push(p);
+            this.aiControllers.push({ player: p, ai: this.createAI(blueType) });
+        }
+
+        this.rebuildTeamCache();
+        this.powerUpManager = new PowerUpManager(this.field);
+        this.powerUpManager.enabled = this.settings.powerups;
+
+        this.redScore = 0;
+        this.blueScore = 0;
+        this.timeRemaining = this.settings.duration * 1000;
+        this.isRunning = true;
+        this.isPaused = false;
+        this.matchOver = false;
+        this.isGoalScored = false;
+        this.goalTimer = 0;
+        this.kickoffTeam = null;
+        this.kickoffActive = false;
+        this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
+        this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
+        this.timeScale = 1.0;
+        this.combo = { team: null, count: 0 };
+        this.suddenDeath = false;
+        this.suddenDeathTimer = 0;
+        this.suddenDeathShrink = 0;
+        Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
+
+        this.applyMapPhysics();
+        this.lastTime = performance.now();
+        Sound.whistle(false);
+        Sound.startMusic();
+        this.loop();
+    }
+
+    setSpectatorSpeed(multiplier) {
+        Physics.GAME_SPEED = this._baseGameSpeed * multiplier;
+    }
+
     startLocal1v1() {
         this.renderer.resize();
-        this.field = new Field(this.renderer.w, this.renderer.h, this.settings.map || 'classic');
+        this._setVirtualSize(this.settings.map || 'classic');
+        this._updateFieldViewScale();
+        this.field = new Field(this.VIRTUAL_W, this.VIRTUAL_H, this.settings.map || 'classic');
         this.ball = new Ball(this.field.centerX, this.field.centerY);
 
         this.players = [];
@@ -293,7 +425,9 @@ class Game {
 
     startPractice() {
         this.renderer.resize();
-        this.field = new Field(this.renderer.w, this.renderer.h, this.settings.map);
+        this._setVirtualSize(this.settings.map);
+        this._updateFieldViewScale();
+        this.field = new Field(this.VIRTUAL_W, this.VIRTUAL_H, this.settings.map);
         this.ball = new Ball(this.field.centerX, this.field.centerY);
 
         this.players = [];
@@ -340,7 +474,9 @@ class Game {
         this.settings = { ...settings };
 
         this.renderer.resize();
-        this.field = new Field(this.renderer.w, this.renderer.h, this.settings.map || 'classic');
+        this._setVirtualSize(this.settings.map || 'classic');
+        this._updateFieldViewScale();
+        this.field = new Field(this.VIRTUAL_W, this.VIRTUAL_H, this.settings.map || 'classic');
         this.ball = new Ball(this.field.centerX, this.field.centerY);
 
         this.players = [];
@@ -1215,7 +1351,19 @@ class Game {
         const localScore = localTeam === 'red' ? this.redScore : this.blueScore;
         const remoteScore = localTeam === 'red' ? this.blueScore : this.redScore;
 
-        if (localScore > remoteScore) {
+        if (this.isSpectator) {
+            if (this.redScore > this.blueScore) {
+                title.textContent = 'RED WINS!';
+                title.style.color = '#e94560';
+            } else if (this.blueScore > this.redScore) {
+                title.textContent = 'BLUE WINS!';
+                title.style.color = '#53d8fb';
+            } else {
+                title.textContent = 'DRAW';
+                title.style.color = '#aaa';
+            }
+            Physics.GAME_SPEED = this._baseGameSpeed;
+        } else if (localScore > remoteScore) {
             title.textContent = 'YOU WIN!';
             title.style.color = '#4caf50';
             setTimeout(() => Sound.win(), 400);
@@ -1233,12 +1381,19 @@ class Game {
         const totalPoss = this.stats.possession.red + this.stats.possession.blue;
         const redPoss = totalPoss > 0 ? Math.round((this.stats.possession.red / totalPoss) * 100) : 50;
 
-        stats.innerHTML = `
-            Possession: <span style="color:#e94560">${redPoss}%</span> - <span style="color:#53d8fb">${100 - redPoss}%</span><br>
-            Shots: <span style="color:#e94560">${this.stats.shots.red}</span> - <span style="color:#53d8fb">${this.stats.shots.blue}</span><br>
-            Your Goals: ${this.humanPlayer ? this.humanPlayer.goals : 0}<br>
-            Your Kicks: ${this.humanPlayer ? this.humanPlayer.kicks : 0}
-        `;
+        if (this.isSpectator) {
+            stats.innerHTML = `
+                Possession: <span style="color:#e94560">${redPoss}%</span> - <span style="color:#53d8fb">${100 - redPoss}%</span><br>
+                Shots: <span style="color:#e94560">${this.stats.shots.red}</span> - <span style="color:#53d8fb">${this.stats.shots.blue}</span>
+            `;
+        } else {
+            stats.innerHTML = `
+                Possession: <span style="color:#e94560">${redPoss}%</span> - <span style="color:#53d8fb">${100 - redPoss}%</span><br>
+                Shots: <span style="color:#e94560">${this.stats.shots.red}</span> - <span style="color:#53d8fb">${this.stats.shots.blue}</span><br>
+                Your Goals: ${this.humanPlayer ? this.humanPlayer.goals : 0}<br>
+                Your Kicks: ${this.humanPlayer ? this.humanPlayer.kicks : 0}
+            `;
+        }
 
         resultOverlay.classList.remove('hidden');
     }
@@ -1343,6 +1498,31 @@ class Game {
 
     render() {
         this.renderer.clear();
+
+        // Apply field view scale for training-size matches (trained AI watch mode)
+        const ctx = this.renderer.ctx;
+        const fvs = this.renderer.fieldViewScale;
+        if (fvs) {
+            ctx.save();
+            if (this.cameraZoom > 1) {
+                // Camera follows player (or ball in spectator mode)
+                const target = this.humanPlayer || this.ball;
+                // Smooth camera follow
+                const lerp = 0.1;
+                this._cameraX += (target.x - this._cameraX) * lerp;
+                this._cameraY += (target.y - this._cameraY) * lerp;
+                const zoom = fvs * this.cameraZoom;
+                const halfW = this.renderer.w / 2;
+                const halfH = this.renderer.h / 2;
+                ctx.translate(halfW, halfH);
+                ctx.scale(zoom, zoom);
+                ctx.translate(-this._cameraX, -this._cameraY);
+            } else {
+                ctx.translate(this.renderer.fieldViewOffsetX, this.renderer.fieldViewOffsetY);
+                ctx.scale(fvs, fvs);
+            }
+        }
+
         this.renderer.trackedBall = this.ball;
         this.renderer._currentMapType = this.field.mapType;
         this.renderer.drawField(this.field);
@@ -1422,8 +1602,144 @@ class Game {
             }
         }
 
+        // Restore field view scale transform
+        if (fvs) ctx.restore();
+
+        // Goal flash overlay (must be in screen space, not world space)
+        if (this.renderer.goalFlashTimer > 0) {
+            const alpha = (this.renderer.goalFlashTimer / 500) * 0.3;
+            ctx.fillStyle = this.renderer.goalFlashTeam === 'red'
+                ? `rgba(233, 69, 96, ${alpha})`
+                : `rgba(83, 216, 251, ${alpha})`;
+            ctx.fillRect(0, 0, this.renderer.w, this.renderer.h);
+        }
+
+        // Huge map: draw off-screen indicators and minimap (in screen space)
+        if (this.cameraZoom > 1) {
+            this._drawOffScreenArrows(ctx);
+            this._drawMinimap(ctx);
+        }
+
         // End frame (restore screen shake transform)
         this.renderer.endFrame();
+    }
+
+    _worldToScreen(wx, wy) {
+        const fvs = this.renderer.fieldViewScale;
+        const zoom = fvs * this.cameraZoom;
+        const halfW = this.renderer.w / 2;
+        const halfH = this.renderer.h / 2;
+        return {
+            x: halfW + (wx - this._cameraX) * zoom,
+            y: halfH + (wy - this._cameraY) * zoom
+        };
+    }
+
+    _drawOffScreenArrows(ctx) {
+        const w = this.renderer.w;
+        const h = this.renderer.h;
+        const margin = 30;
+        const arrowSize = 10;
+
+        const drawArrow = (wx, wy, color) => {
+            const s = this._worldToScreen(wx, wy);
+            // Check if on screen
+            if (s.x >= -20 && s.x <= w + 20 && s.y >= -20 && s.y <= h + 20) return;
+            // Clamp to screen edge
+            const cx = w / 2, cy = h / 2;
+            const dx = s.x - cx, dy = s.y - cy;
+            const angle = Math.atan2(dy, dx);
+            const ex = Math.max(margin, Math.min(w - margin, cx + Math.cos(angle) * (w / 2 - margin)));
+            const ey = Math.max(margin, Math.min(h - margin, cy + Math.sin(angle) * (h / 2 - margin)));
+
+            ctx.save();
+            ctx.translate(ex, ey);
+            ctx.rotate(angle);
+            ctx.beginPath();
+            ctx.moveTo(arrowSize, 0);
+            ctx.lineTo(-arrowSize, -arrowSize * 0.7);
+            ctx.lineTo(-arrowSize, arrowSize * 0.7);
+            ctx.closePath();
+            ctx.fillStyle = color;
+            ctx.globalAlpha = 0.8;
+            ctx.fill();
+            ctx.restore();
+        };
+
+        // Ball arrow (white)
+        drawArrow(this.ball.x, this.ball.y, '#fff');
+
+        // Player arrows
+        for (const p of this.players) {
+            if (p === this.humanPlayer) continue;
+            drawArrow(p.x, p.y, p.team === 'red' ? '#ff4d6d' : '#4dd4ff');
+        }
+    }
+
+    _drawMinimap(ctx) {
+        const mmW = 140, mmH = 90;
+        const mmX = 10, mmY = 50;
+        const f = this.field;
+
+        ctx.save();
+        ctx.globalAlpha = 0.6;
+        ctx.fillStyle = '#0a0e27';
+        ctx.fillRect(mmX, mmY, mmW, mmH);
+        ctx.strokeStyle = '#4dd4ff';
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.4;
+        ctx.strokeRect(mmX, mmY, mmW, mmH);
+
+        // Scale field to minimap
+        const sx = (x) => mmX + ((x - f.x) / f.width) * mmW;
+        const sy = (y) => mmY + ((y - f.y) / f.height) * mmH;
+
+        // Field border
+        ctx.strokeStyle = '#1e3a6e';
+        ctx.globalAlpha = 0.5;
+        ctx.strokeRect(mmX + 1, mmY + 1, mmW - 2, mmH - 2);
+
+        // Center line
+        ctx.beginPath();
+        ctx.moveTo(mmX + mmW / 2, mmY);
+        ctx.lineTo(mmX + mmW / 2, mmY + mmH);
+        ctx.stroke();
+
+        // Players
+        ctx.globalAlpha = 0.9;
+        for (const p of this.players) {
+            ctx.beginPath();
+            ctx.arc(sx(p.x), sy(p.y), p === this.humanPlayer ? 3.5 : 2.5, 0, Math.PI * 2);
+            ctx.fillStyle = p.team === 'red' ? '#ff4d6d' : '#4dd4ff';
+            ctx.fill();
+            if (p === this.humanPlayer) {
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            }
+        }
+
+        // Ball
+        ctx.beginPath();
+        ctx.arc(sx(this.ball.x), sy(this.ball.y), 2, 0, Math.PI * 2);
+        ctx.fillStyle = '#fff';
+        ctx.fill();
+
+        // Camera viewport rectangle
+        const fvs = this.renderer.fieldViewScale;
+        const zoom = fvs * this.cameraZoom;
+        const viewW = this.renderer.w / zoom;
+        const viewH = this.renderer.h / zoom;
+        const vx = sx(this._cameraX - viewW / 2);
+        const vy = sy(this._cameraY - viewH / 2);
+        const vw = (viewW / f.width) * mmW;
+        const vh = (viewH / f.height) * mmH;
+        ctx.strokeStyle = '#fff';
+        ctx.globalAlpha = 0.5;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(vx, vy, vw, vh);
+
+        ctx.restore();
     }
 
     pause() {
@@ -1444,12 +1760,19 @@ class Game {
         document.getElementById('pause-overlay').classList.add('hidden');
         document.getElementById('result-overlay').classList.add('hidden');
         document.getElementById('goal-notification').classList.add('hidden');
-        this.startMatch();
+        if (this._aiVsAiTypes) {
+            this.startAIvsAI(this._aiVsAiTypes.red, this._aiVsAiTypes.blue);
+        } else {
+            this.startMatch();
+        }
     }
 
     quit() {
         this.isRunning = false;
         this.isLocal1v1 = false;
+        this.isSpectator = false;
+        this._aiVsAiTypes = null;
+        Physics.GAME_SPEED = this._baseGameSpeed;
         this.resetMapPhysics();
         Sound.stopMusic();
         this.humanPlayer2 = null;
