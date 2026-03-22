@@ -8,12 +8,12 @@ class PowerUpManager {
         this.enabled = true;
 
         this.types = [
-            { id: 'speed', label: 'SPEED BOOST', color: '#4caf50', icon: 'S', duration: 8000 },
-            { id: 'power', label: 'POWER KICK', color: '#ff9800', icon: 'P', duration: 10000 },
-            { id: 'curve', label: 'CURVE BALL', color: '#9c27b0', icon: 'C', duration: 12000 },
-            { id: 'big', label: 'BIG PLAYER', color: '#2196f3', icon: 'B', duration: 8000 },
-            { id: 'freeze', label: 'FREEZE OPPONENTS', color: '#00bcd4', icon: 'F', duration: 3000 },
-            { id: 'magnet', label: 'BALL MAGNET', color: '#e91e63', icon: 'M', duration: 6000 },
+            { id: 'speed', label: 'SPEED BOOST', color: '#4caf50', icon: '⚡', duration: 8000, shape: 'bolt' },
+            { id: 'ghost', label: 'GHOST BALL', color: '#ffffff', icon: '👻', duration: 5000, shape: 'diamond' },
+            { id: 'dash', label: 'DASH', color: '#ffc107', icon: '💨', duration: 0, shape: 'arrow' },
+            { id: 'shield', label: 'SHIELD', color: '#ffd700', icon: '🛡', duration: 6000, shape: 'hexagon' },
+            { id: 'freeze', label: 'FREEZE OPPONENTS', color: '#00bcd4', icon: '❄', duration: 3000, shape: 'snowflake' },
+            { id: 'slow', label: 'SLOW FIELD', color: '#009688', icon: '🕐', duration: 4000, shape: 'wave' },
         ];
     }
 
@@ -33,6 +33,8 @@ class PowerUpManager {
         for (const pu of this.powerUps) {
             pu.bobTimer += dt * 0.003;
             pu.scale = 1 + Math.sin(pu.bobTimer) * 0.15;
+            pu.rotateTimer = (pu.rotateTimer || 0) + dt * 0.002;
+            pu.pulseTimer = (pu.pulseTimer || 0) + dt * 0.004;
         }
 
         // Check collection
@@ -58,10 +60,13 @@ class PowerUpManager {
 
         this.powerUps.push({
             x, y,
-            radius: 12,
+            radius: 14,
             type: type,
             bobTimer: 0,
             scale: 1,
+            rotateTimer: 0,
+            pulseTimer: 0,
+            spawnTime: Date.now(),
         });
         Sound.powerUpSpawn();
     }
@@ -79,9 +84,25 @@ class PowerUpManager {
                     p.powerUpTimer = type.duration;
                 }
             }
-        } else if (type.id === 'big') {
-            player.radius = 34;
-            player.powerUp = 'big';
+        } else if (type.id === 'slow') {
+            // Slow all opponents
+            for (const p of allPlayers) {
+                if (p.team !== player.team) {
+                    p.powerUp = 'slowed';
+                    p.powerUpTimer = type.duration;
+                }
+            }
+        } else if (type.id === 'dash') {
+            // Dash: instant use — teleport in movement direction
+            player.powerUp = 'dash';
+            player.powerUpTimer = 1; // consumed immediately in game.js
+            player.dashReady = true;
+        } else if (type.id === 'ghost') {
+            // Ghost ball: next kick passes through players
+            player.powerUp = 'ghost';
+            player.powerUpTimer = type.duration;
+        } else if (type.id === 'shield') {
+            player.powerUp = 'shield';
             player.powerUpTimer = type.duration;
         } else {
             player.powerUp = type.id;
@@ -95,39 +116,202 @@ class PowerUpManager {
     }
 
     draw(ctx) {
+        const now = Date.now();
         for (const pu of this.powerUps) {
             ctx.save();
             ctx.translate(pu.x, pu.y);
             ctx.scale(pu.scale, pu.scale);
 
-            // Glow
-            const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, pu.radius * 2);
-            gradient.addColorStop(0, pu.type.color + '40');
-            gradient.addColorStop(1, 'transparent');
-            ctx.fillStyle = gradient;
+            const age = (now - pu.spawnTime) / 1000;
+            const pulse = Math.sin(pu.pulseTimer) * 0.5 + 0.5;
+            const rot = pu.rotateTimer;
+
+            // Outer glow ring (pulsing)
+            const glowRadius = pu.radius * 2.5 + pulse * 4;
+            const outerGlow = ctx.createRadialGradient(0, 0, pu.radius * 0.5, 0, 0, glowRadius);
+            outerGlow.addColorStop(0, pu.type.color + '30');
+            outerGlow.addColorStop(0.6, pu.type.color + '15');
+            outerGlow.addColorStop(1, 'transparent');
+            ctx.fillStyle = outerGlow;
             ctx.beginPath();
-            ctx.arc(0, 0, pu.radius * 2, 0, Math.PI * 2);
+            ctx.arc(0, 0, glowRadius, 0, Math.PI * 2);
             ctx.fill();
 
-            // Body
-            ctx.fillStyle = pu.type.color;
-            ctx.beginPath();
-            ctx.arc(0, 0, pu.radius, 0, Math.PI * 2);
-            ctx.fill();
+            // Draw shape based on type
+            this._drawShape(ctx, pu.type, pu.radius, rot, pulse);
 
-            // Border
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-
-            // Icon
+            // Inner icon
             ctx.fillStyle = '#fff';
-            ctx.font = 'bold 12px sans-serif';
+            ctx.font = `bold ${pu.radius}px sans-serif`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText(pu.type.icon, 0, 0);
+            ctx.fillText(pu.type.icon, 0, 1);
+
+            // Orbiting particles
+            this._drawParticles(ctx, pu.type, pu.radius, rot, age);
 
             ctx.restore();
         }
+    }
+
+    _drawShape(ctx, type, r, rot, pulse) {
+        ctx.save();
+
+        switch (type.shape) {
+            case 'bolt': // Speed boost — rotating hexagon
+                ctx.rotate(rot * 0.5);
+                this._polygon(ctx, 6, r + 1);
+                ctx.fillStyle = type.color + 'cc';
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                break;
+
+            case 'diamond': // Ghost ball — rotating diamond
+                ctx.rotate(rot * 0.8 + Math.PI / 4);
+                this._polygon(ctx, 4, r + 2);
+                ctx.fillStyle = type.color + '99';
+                ctx.fill();
+                ctx.strokeStyle = type.color;
+                ctx.lineWidth = 2;
+                ctx.setLineDash([3, 3]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                // Inner glow for ghostly effect
+                const ghostGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+                ghostGrad.addColorStop(0, 'rgba(255,255,255,0.4)');
+                ghostGrad.addColorStop(1, 'rgba(255,255,255,0)');
+                ctx.fillStyle = ghostGrad;
+                ctx.beginPath();
+                ctx.arc(0, 0, r, 0, Math.PI * 2);
+                ctx.fill();
+                break;
+
+            case 'arrow': // Dash — pointed arrow shape
+                ctx.rotate(rot * 1.5);
+                this._drawArrow(ctx, r + 2);
+                ctx.fillStyle = type.color + 'dd';
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                break;
+
+            case 'hexagon': // Shield — thick hexagon with double border
+                ctx.rotate(rot * 0.3);
+                this._polygon(ctx, 6, r + 2);
+                ctx.fillStyle = type.color + 'bb';
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+                // Inner ring
+                this._polygon(ctx, 6, r - 3);
+                ctx.strokeStyle = type.color;
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+                break;
+
+            case 'snowflake': // Freeze — circle with ice spikes
+                ctx.fillStyle = type.color + 'cc';
+                ctx.beginPath();
+                ctx.arc(0, 0, r, 0, Math.PI * 2);
+                ctx.fill();
+                // Spikes
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2;
+                for (let i = 0; i < 6; i++) {
+                    const a = rot * 0.4 + (i * Math.PI * 2) / 6;
+                    ctx.beginPath();
+                    ctx.moveTo(Math.cos(a) * r * 0.5, Math.sin(a) * r * 0.5);
+                    ctx.lineTo(Math.cos(a) * (r + 5), Math.sin(a) * (r + 5));
+                    ctx.stroke();
+                    // Small branches
+                    const bx = Math.cos(a) * (r + 2);
+                    const by = Math.sin(a) * (r + 2);
+                    ctx.beginPath();
+                    ctx.moveTo(bx, by);
+                    ctx.lineTo(bx + Math.cos(a + 0.5) * 3, by + Math.sin(a + 0.5) * 3);
+                    ctx.moveTo(bx, by);
+                    ctx.lineTo(bx + Math.cos(a - 0.5) * 3, by + Math.sin(a - 0.5) * 3);
+                    ctx.stroke();
+                }
+                break;
+
+            case 'wave': // Slow field — circle with wave rings
+                ctx.fillStyle = type.color + 'bb';
+                ctx.beginPath();
+                ctx.arc(0, 0, r, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                // Expanding wave rings
+                for (let i = 0; i < 2; i++) {
+                    const wavePhase = (pulse + i * 0.5) % 1;
+                    const waveR = r + wavePhase * 10;
+                    ctx.globalAlpha = (1 - wavePhase) * 0.5;
+                    ctx.strokeStyle = type.color;
+                    ctx.lineWidth = 1.5;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, waveR, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+                ctx.globalAlpha = 1;
+                break;
+
+            default:
+                ctx.fillStyle = type.color;
+                ctx.beginPath();
+                ctx.arc(0, 0, r, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+        }
+
+        ctx.restore();
+    }
+
+    _drawParticles(ctx, type, r, rot, age) {
+        const count = 4;
+        for (let i = 0; i < count; i++) {
+            const angle = rot * 1.2 + (i * Math.PI * 2) / count + age * 0.3;
+            const orbitR = r + 6 + Math.sin(age * 2 + i) * 3;
+            const px = Math.cos(angle) * orbitR;
+            const py = Math.sin(angle) * orbitR;
+            const pSize = 1.5 + Math.sin(age * 3 + i * 1.5) * 0.8;
+
+            ctx.fillStyle = type.color;
+            ctx.globalAlpha = 0.6 + Math.sin(age * 2 + i) * 0.3;
+            ctx.beginPath();
+            ctx.arc(px, py, pSize, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+    }
+
+    _polygon(ctx, sides, r) {
+        ctx.beginPath();
+        for (let i = 0; i < sides; i++) {
+            const a = (i * Math.PI * 2) / sides - Math.PI / 2;
+            if (i === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+            else ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+        }
+        ctx.closePath();
+    }
+
+    _drawArrow(ctx, r) {
+        ctx.beginPath();
+        // 5-pointed arrow/star shape
+        for (let i = 0; i < 5; i++) {
+            const outerA = (i * Math.PI * 2) / 5 - Math.PI / 2;
+            const innerA = outerA + Math.PI / 5;
+            if (i === 0) ctx.moveTo(Math.cos(outerA) * r, Math.sin(outerA) * r);
+            else ctx.lineTo(Math.cos(outerA) * r, Math.sin(outerA) * r);
+            ctx.lineTo(Math.cos(innerA) * r * 0.5, Math.sin(innerA) * r * 0.5);
+        }
+        ctx.closePath();
     }
 }

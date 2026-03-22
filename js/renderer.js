@@ -15,6 +15,7 @@ class Renderer {
         this._bgH = 0;
         this.comboPopup = null;
         this.suddenDeathFlash = 0;
+        this.dashTrails = [];
         this.resize();
     }
 
@@ -422,26 +423,59 @@ class Renderer {
             }
         }
 
+        // Ghost ball effect
+        const isGhost = ball.ghost;
+        if (isGhost) {
+            ctx.globalAlpha = 0.35 + Math.sin(Date.now() * 0.005) * 0.15;
+        }
+
         // Ball shadow
-        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fillStyle = isGhost ? 'rgba(0,0,0,0.1)' : 'rgba(0,0,0,0.3)';
         ctx.beginPath();
         ctx.ellipse(ball.x + 2, ball.y + 4, ball.radius * 0.9, ball.radius * 0.5, 0, 0, Math.PI * 2);
         ctx.fill();
 
+        // Ghost ball outer glow
+        if (isGhost) {
+            const ghostGlow = ctx.createRadialGradient(ball.x, ball.y, ball.radius * 0.5, ball.x, ball.y, ball.radius * 2.5);
+            ghostGlow.addColorStop(0, 'rgba(200, 220, 255, 0.3)');
+            ghostGlow.addColorStop(1, 'rgba(200, 220, 255, 0)');
+            ctx.fillStyle = ghostGlow;
+            ctx.beginPath();
+            ctx.arc(ball.x, ball.y, ball.radius * 2.5, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
         // Ball body
         let ballColor = '#e0e8ff';
-        if (isBlue && ballSpeed > 2) ballColor = '#aaddff';
+        if (isGhost) ballColor = '#c8d8ff';
+        else if (isBlue && ballSpeed > 2) ballColor = '#aaddff';
         else if ((isSuper || isFire) && ballSpeed > 2) ballColor = '#ffdd44';
         ctx.fillStyle = ballColor;
         ctx.beginPath();
         ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
         ctx.fill();
 
+        // Ghost dashed outline
+        if (isGhost) {
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.arc(ball.x, ball.y, ball.radius + 1, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
         // Ball highlight (cheap 3D effect — single arc, no gradient)
         ctx.fillStyle = 'rgba(255,255,255,0.25)';
         ctx.beginPath();
         ctx.arc(ball.x - ball.radius * 0.25, ball.y - ball.radius * 0.25, ball.radius * 0.45, 0, Math.PI * 2);
         ctx.fill();
+
+        if (isGhost) {
+            ctx.globalAlpha = 1;
+        }
 
         // Ball pattern (pentagon dots)
         ctx.fillStyle = 'rgba(100,130,255,0.3)';
@@ -475,16 +509,85 @@ class Renderer {
         ctx.ellipse(player.x + 2, player.y + 4, player.radius * 0.9, player.radius * 0.5, 0, 0, Math.PI * 2);
         ctx.fill();
 
-        // Power-up ring
-        if (player.powerUp && player.powerUp !== 'frozen') {
-            const colors = { speed: '#4caf50', power: '#ff9800', curve: '#9c27b0', big: '#2196f3', magnet: '#e91e63' };
-            ctx.strokeStyle = colors[player.powerUp] || '#fff';
-            ctx.lineWidth = 3;
-            ctx.setLineDash([4, 4]);
+        // Power-up effects
+        if (player.powerUp && player.powerUp !== 'frozen' && player.powerUp !== 'slowed') {
+            const colors = { speed: '#4caf50', ghost: '#ffffff', shield: '#ffd700' };
+            const color = colors[player.powerUp] || '#fff';
+            const t = Date.now() * 0.003;
+
+            if (player.powerUp === 'shield') {
+                // Shield: golden hexagonal aura
+                ctx.save();
+                ctx.translate(player.x, player.y);
+                ctx.rotate(t * 0.2);
+                ctx.beginPath();
+                const shieldR = player.radius + 6;
+                for (let i = 0; i < 6; i++) {
+                    const a = (i * Math.PI * 2) / 6;
+                    if (i === 0) ctx.moveTo(Math.cos(a) * shieldR, Math.sin(a) * shieldR);
+                    else ctx.lineTo(Math.cos(a) * shieldR, Math.sin(a) * shieldR);
+                }
+                ctx.closePath();
+                ctx.strokeStyle = '#ffd700';
+                ctx.lineWidth = 3;
+                ctx.globalAlpha = 0.6 + Math.sin(t * 2) * 0.3;
+                ctx.stroke();
+                ctx.fillStyle = 'rgba(255, 215, 0, 0.1)';
+                ctx.fill();
+                ctx.globalAlpha = 1;
+                ctx.restore();
+            } else if (player.powerUp === 'ghost') {
+                // Ghost: ethereal pulsing white aura with dashed ring
+                ctx.globalAlpha = 0.4 + Math.sin(t * 2) * 0.2;
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([3, 5]);
+                ctx.beginPath();
+                ctx.arc(player.x, player.y, player.radius + 6, t, t + Math.PI * 1.5);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.globalAlpha = 1;
+            } else if (player.powerUp === 'speed') {
+                // Speed: green streak lines trailing behind
+                ctx.strokeStyle = '#4caf50';
+                ctx.lineWidth = 2;
+                ctx.globalAlpha = 0.5;
+                for (let i = 0; i < 3; i++) {
+                    const offset = (i + 1) * 5;
+                    const trailX = player.x - (player.vx * offset * 0.3);
+                    const trailY = player.y - (player.vy * offset * 0.3);
+                    ctx.beginPath();
+                    ctx.arc(trailX, trailY, player.radius - i * 3, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.globalAlpha *= 0.5;
+                }
+                ctx.globalAlpha = 1;
+            } else {
+                // Default: colored dashed ring
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 3;
+                ctx.setLineDash([4, 4]);
+                ctx.beginPath();
+                ctx.arc(player.x, player.y, player.radius + 4, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+        }
+
+        // Slowed effect: teal tint overlay
+        if (player.powerUp === 'slowed') {
+            ctx.fillStyle = 'rgba(0, 150, 136, 0.25)';
             ctx.beginPath();
-            ctx.arc(player.x, player.y, player.radius + 4, 0, Math.PI * 2);
+            ctx.arc(player.x, player.y, player.radius + 3, 0, Math.PI * 2);
+            ctx.fill();
+            // Slow wave rings
+            const t = Date.now() * 0.002;
+            ctx.strokeStyle = 'rgba(0, 150, 136, 0.3)';
+            ctx.lineWidth = 1;
+            const wavePhase = (t % 1);
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, player.radius + 3 + wavePhase * 8, 0, Math.PI * 2);
             ctx.stroke();
-            ctx.setLineDash([]);
         }
 
         // Stunned effect (simplified — just 4 dots orbiting)
@@ -700,20 +803,42 @@ class Renderer {
         }
     }
 
-    drawMagnetLink(owner, ball, dist) {
-        const ctx = this.ctx;
-        const maxRange = 80;
-        const alpha = 0.4 * (1 - dist / maxRange);
-        const color = owner.team === 'red' ? `rgba(233,69,96,${alpha})` : `rgba(83,216,251,${alpha})`;
+    spawnDashTrail(fromX, fromY, toX, toY, team) {
+        this.dashTrails.push({
+            fromX, fromY, toX, toY, team,
+            life: 1.0,
+        });
+    }
 
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
-        ctx.setLineDash([4, 6]);
-        ctx.beginPath();
-        ctx.moveTo(owner.x, owner.y);
-        ctx.lineTo(ball.x, ball.y);
-        ctx.stroke();
-        ctx.setLineDash([]);
+    drawDashTrails() {
+        const ctx = this.ctx;
+        for (let i = this.dashTrails.length - 1; i >= 0; i--) {
+            const t = this.dashTrails[i];
+            t.life -= 0.04;
+            if (t.life <= 0) { this.dashTrails.splice(i, 1); continue; }
+
+            const color = t.team === 'red' ? '255,180,50' : '50,180,255';
+            // Streak line
+            ctx.globalAlpha = t.life * 0.7;
+            ctx.strokeStyle = `rgba(${color},${t.life})`;
+            ctx.lineWidth = 4 * t.life;
+            ctx.beginPath();
+            ctx.moveTo(t.fromX, t.fromY);
+            ctx.lineTo(t.toX, t.toY);
+            ctx.stroke();
+
+            // Afterimage circles along path
+            for (let j = 0; j < 4; j++) {
+                const frac = j / 4;
+                const px = t.fromX + (t.toX - t.fromX) * frac;
+                const py = t.fromY + (t.toY - t.fromY) * frac;
+                ctx.fillStyle = `rgba(${color},${t.life * 0.4 * (1 - frac)})`;
+                ctx.beginPath();
+                ctx.arc(px, py, 12 * t.life * (1 - frac * 0.5), 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.globalAlpha = 1;
+        }
     }
 
     spawnHitFlash(x, y, intensity) {

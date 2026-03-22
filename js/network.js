@@ -161,6 +161,8 @@ class NetworkManager {
             vy: Math.round(game.ball.vy * 10) / 10,
             sp: Math.round((game.ball.spin || 0) * 10) / 10,
             sk: game.ball.superKick || 0,
+            gh: game.ball.ghost ? 1 : 0,
+            gt: Math.round(game.ball.ghostTimer || 0),
         };
 
         const state = {
@@ -215,6 +217,8 @@ class NetworkManager {
         game.ball.vy = snapshot.b.vy;
         game.ball.spin = snapshot.b.sp;
         game.ball.superKick = snapshot.b.sk;
+        game.ball.ghost = !!snapshot.b.gh;
+        game.ball.ghostTimer = snapshot.b.gt || 0;
 
         game.redScore = snapshot.rs;
         game.blueScore = snapshot.bs;
