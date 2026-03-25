@@ -886,17 +886,41 @@ class Game {
             }
         }
 
-        // Magnet power-up: ball attracted to player
+        // Dash power-up: instant teleport in movement direction + stun nearby opponents
         for (const p of this.players) {
-            if (p.powerUp === 'magnet') {
-                const dist = Physics.distance(p, this.ball);
-                if (dist < 120 && dist > p.radius + this.ball.radius) {
-                    const dx = p.x - this.ball.x;
-                    const dy = p.y - this.ball.y;
+            if (p.dashReady && p.powerUp === 'dash') {
+                // Find movement direction (use velocity or input)
+                let dx = p.vx;
+                let dy = p.vy;
+                const speed = Math.sqrt(dx * dx + dy * dy);
+                if (speed > 0.5) {
                     const n = Physics.normalize(dx, dy);
-                    this.ball.vx += n.x * 0.35 * Physics.dtRatio;
-                    this.ball.vy += n.y * 0.35 * Physics.dtRatio;
+                    const dashDist = 80;
+                    const oldX = p.x;
+                    const oldY = p.y;
+                    p.x += n.x * dashDist;
+                    p.y += n.y * dashDist;
+                    // Stun opponents along the dash path
+                    for (const opp of this.players) {
+                        if (opp.team === p.team || opp.stunTimer > 0) continue;
+                        // Check distance to dash line
+                        const dist = Physics.distance(p, opp);
+                        const distOld = Physics.distance({ x: oldX, y: oldY }, opp);
+                        if (dist < p.radius + opp.radius + 20 || distOld < p.radius + opp.radius + 20) {
+                            opp.stunTimer = 400;
+                            const knockN = Physics.normalize(opp.x - p.x, opp.y - p.y);
+                            opp.vx = knockN.x * 3;
+                            opp.vy = knockN.y * 3;
+                            this.renderer.spawnHitFlash(opp.x, opp.y, 0.6);
+                        }
+                    }
+                    // Dash visual effect
+                    this.renderer.spawnDashTrail(oldX, oldY, p.x, p.y, p.team);
+                    Sound.powerUpCollect();
                 }
+                p.dashReady = false;
+                p.powerUp = null;
+                p.powerUpTimer = 0;
             }
         }
 
@@ -955,10 +979,15 @@ class Game {
 
         // Player-ball collisions
         for (const p of this.players) {
+            // Ghost ball: passes through all players except the kicker
+            if (this.ball.ghost && this.ball.lastKickedBy && p !== this.ball.lastKickedBy) {
+                continue;
+            }
+
             // Fire ball piercing: skip collision with opponents, stun them instead
             if (this.ball.fireLevel > 0 && this.ball.lastKickedBy && p.team !== this.ball.lastKickedBy.team) {
                 const dist = Physics.distance(p, this.ball);
-                if (dist < p.radius + this.ball.radius && p.stunTimer <= 0) {
+                if (dist < p.radius + this.ball.radius && p.stunTimer <= 0 && p.powerUp !== 'shield') {
                     // Pierce through: stun player, slow ball slightly
                     p.stunTimer = 600;
                     const knockDir = Physics.normalize(p.x - this.ball.x, p.y - this.ball.y);
@@ -1044,7 +1073,8 @@ class Game {
             }
 
             // Power kick ball hits any player: knock them back and stun based on speed
-            if (collided && this.ball.lastKickedBy && p !== this.ball.lastKickedBy) {
+            // Shield power-up: immune to stun and knockback
+            if (collided && this.ball.lastKickedBy && p !== this.ball.lastKickedBy && p.powerUp !== 'shield') {
                 const ballSpeed = Math.sqrt(this.ball.vx * this.ball.vx + this.ball.vy * this.ball.vy);
                 const speedRatio = ballSpeed / Physics.MAX_BALL_SPEED;
                 if (this.ball.superKick > 0) {
@@ -1201,7 +1231,7 @@ class Game {
             notif.querySelector('.powerup-text').textContent = collected.type.label;
             notif.classList.remove('hidden');
             setTimeout(() => notif.classList.add('hidden'), 2000);
-            if (collected.type.id === 'freeze') Sound.freeze();
+            if (collected.type.id === 'freeze' || collected.type.id === 'slow') Sound.freeze();
             else Sound.powerUpCollect();
         }
 
@@ -1563,6 +1593,9 @@ class Game {
 
         // Ball
         this.renderer.drawBall(this.ball);
+
+        // Dash trails
+        this.renderer.drawDashTrails();
 
         // Hit flash particles
         this.renderer.drawHitFlashes();

@@ -22,6 +22,8 @@ class Player {
         this.kickChargeRatio = 0;
         this.stunTimer = 0;
         this.momentumBonus = 0;
+        // Dash power-up state
+        this.dashReady = false;
         // Ball pull ability
         this.pullActive = false;
         this.pullCooldown = 0;
@@ -40,6 +42,7 @@ class Player {
         this.pullActive = false;
         this.pullCooldown = 0;
         this.pullDuration = 0;
+        this.dashReady = false;
     }
 
     update(dt) {
@@ -71,8 +74,8 @@ class Player {
         if (this.powerUpTimer > 0) {
             this.powerUpTimer -= dt;
             if (this.powerUpTimer <= 0) {
-                if (this.powerUp === 'big') this.radius = 24;
                 this.powerUp = null;
+                this.dashReady = false;
             }
         }
 
@@ -91,13 +94,13 @@ class Player {
     getMaxSpeed() {
         let base = Physics.MAX_PLAYER_SPEED;
         if (this.powerUp === 'speed') base *= 1.5;
+        if (this.powerUp === 'slowed') base *= 0.5;
         if (this.momentumBonus) base *= (1 + this.momentumBonus * 0.15);
         return base;
     }
 
     getKickForce() {
         let base = Physics.KICK_FORCE;
-        if (this.powerUp === 'power') base = Physics.POWER_KICK_FORCE;
         if (this.momentumBonus) base *= (1 + this.momentumBonus * 0.2);
         return base;
     }
@@ -151,16 +154,23 @@ class Player {
         }
 
         // Ball spin/curve: calculate cross product between kick direction and player movement
-        // This applies to ALL players; curve power-up doubles the effect
         const perpX = -n.y;
         const perpY = n.x;
         const movePerp = this.vx * perpX + this.vy * perpY;
-        const spinMultiplier = this.powerUp === 'curve' ? 0.5 : 0.25;
+        const spinMultiplier = 0.25;
         ball.vx += perpX * movePerp * spinMultiplier;
         ball.vy += perpY * movePerp * spinMultiplier;
 
         // Apply spin to ball for continuous curving in flight
-        ball.spin = movePerp * (this.powerUp === 'curve' ? 0.5 : 0.25);
+        ball.spin = movePerp * 0.25;
+
+        // Ghost ball: kick makes ball pass through players
+        if (this.powerUp === 'ghost') {
+            ball.ghost = true;
+            ball.ghostTimer = 3000; // ghost lasts 3 seconds after kick
+            this.powerUp = null;
+            this.powerUpTimer = 0;
+        }
 
         this.kickCooldown = 180;
         this.kicks++;
@@ -187,6 +197,8 @@ class Ball {
         this.superTarget = null;
         this.fireLevel = 0;
         this.fireDuration = 0;
+        this.ghost = false;
+        this.ghostTimer = 0;
     }
 
     reset() {
@@ -201,6 +213,8 @@ class Ball {
         this.superTarget = null;
         this.fireLevel = 0;
         this.fireDuration = 0;
+        this.ghost = false;
+        this.ghostTimer = 0;
     }
 
     ignite(level) {
@@ -210,6 +224,15 @@ class Ball {
 
     update(dt) {
         const s = Physics.dtRatio; // Frame-rate independent scale factor
+
+        // Ghost decay
+        if (this.ghost) {
+            this.ghostTimer -= dt;
+            if (this.ghostTimer <= 0) {
+                this.ghost = false;
+                this.ghostTimer = 0;
+            }
+        }
 
         // Fire decay
         if (this.fireLevel > 0) {
