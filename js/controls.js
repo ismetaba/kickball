@@ -19,7 +19,7 @@ class Controls {
         const joystickZone = this.joystickZone;
         const kickBtn = document.getElementById('btn-kick');
 
-        // Joystick
+        // Dynamic joystick — base appears where you touch
         joystickZone.addEventListener('touchstart', (e) => {
             e.preventDefault();
             if (this.joystickActive) return;
@@ -28,11 +28,13 @@ class Controls {
             this.joystickId = touch.identifier;
             this.joystickActive = true;
 
-            const rect = this.joystickBase.getBoundingClientRect();
-            this.baseX = rect.left + rect.width / 2;
-            this.baseY = rect.top + rect.height / 2;
-
-            this.updateJoystick(touch.clientX, touch.clientY);
+            // Position joystick base centered on touch point
+            this.baseX = touch.clientX;
+            this.baseY = touch.clientY;
+            this.joystickBase.style.left = (this.baseX - 60) + 'px';
+            this.joystickBase.style.top = (this.baseY - 60) + 'px';
+            this.joystickBase.classList.add('active');
+            this.joystickThumb.style.transform = 'translate(0px, 0px)';
         }, { passive: false });
 
         document.addEventListener('touchmove', (e) => {
@@ -52,6 +54,7 @@ class Controls {
                     this.game.input.x = 0;
                     this.game.input.y = 0;
                     this.joystickThumb.style.transform = 'translate(0px, 0px)';
+                    this.joystickBase.classList.remove('active');
                 }
             }
         };
@@ -103,6 +106,24 @@ class Controls {
                 this.game.input.pull = false;
                 pullBtn.style.transform = '';
             });
+        }
+
+        // Zoom controls
+        const zoomInBtn = document.getElementById('btn-zoom-in');
+        const zoomOutBtn = document.getElementById('btn-zoom-out');
+        if (zoomInBtn) {
+            zoomInBtn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                this.game.cameraZoom = Math.min(this.game.cameraZoom * 1.25, 4.0);
+                this.game._updateFieldViewScale();
+            }, { passive: false });
+        }
+        if (zoomOutBtn) {
+            zoomOutBtn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                this.game.cameraZoom = Math.max(this.game.cameraZoom / 1.25, 0.5);
+                this.game._updateFieldViewScale();
+            }, { passive: false });
         }
 
         // Prevent scrolling/zooming
@@ -160,6 +181,7 @@ class Controls {
                 this.joystickActive = false;
                 this.joystickId = null;
                 this.joystickThumb.style.transform = 'translate(0px, 0px)';
+                this.joystickBase.classList.remove('active');
             }
         };
         window.addEventListener('blur', clearAllInput);

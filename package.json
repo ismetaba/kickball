@@ -1,0 +1,26 @@
+{
+  "name": "kickball",
+  "version": "1.0.0",
+  "description": "A physics-based soccer game playable in the browser with touch controls, AI opponents, and online multiplayer.",
+  "main": "sw.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ismetaba/kickball.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/ismetaba/kickball/issues"
+  },
+  "homepage": "https://github.com/ismetaba/kickball#readme",
+  "dependencies": {
+    "@capacitor/cli": "^8.2.0",
+    "@capacitor/core": "^8.2.0",
+    "@capacitor/ios": "^8.2.0"
+  }
+}

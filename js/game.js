@@ -91,10 +91,11 @@ class Game {
     }
 
     _setVirtualSize(mapType) {
+        const isMobile = window.innerWidth < 768 || window.innerHeight < 768;
         if (mapType === 'big') {
             this.VIRTUAL_W = 800;
             this.VIRTUAL_H = 500;
-            this.cameraZoom = 1;
+            this.cameraZoom = isMobile ? 1.4 : 1;
         } else if (mapType === 'huge') {
             this.VIRTUAL_W = 2400;
             this.VIRTUAL_H = 1600;
@@ -103,7 +104,7 @@ class Game {
             // Classic
             this.VIRTUAL_W = 1500;
             this.VIRTUAL_H = 1000;
-            this.cameraZoom = 1;
+            this.cameraZoom = isMobile ? 1.4 : 1;
         }
         this._cameraX = this.VIRTUAL_W / 2;
         this._cameraY = this.VIRTUAL_H / 2;
@@ -1534,7 +1535,7 @@ class Game {
         const fvs = this.renderer.fieldViewScale;
         if (fvs) {
             ctx.save();
-            if (this.cameraZoom > 1) {
+            if (this.cameraZoom !== 1) {
                 // Camera follows player (or ball in spectator mode)
                 const target = this.humanPlayer || this.ball;
                 // Smooth camera follow
@@ -1647,8 +1648,8 @@ class Game {
             ctx.fillRect(0, 0, this.renderer.w, this.renderer.h);
         }
 
-        // Huge map: draw off-screen indicators and minimap (in screen space)
-        if (this.cameraZoom > 1) {
+        // Draw off-screen indicators and minimap when zoomed in (in screen space)
+        if (this.cameraZoom > 1.05) {
             this._drawOffScreenArrows(ctx);
             this._drawMinimap(ctx);
         }

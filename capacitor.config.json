@@ -1,0 +1,8 @@
+{
+  "appId": "com.kickzone.app",
+  "appName": "KickZone",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  }
+}

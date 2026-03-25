@@ -21,11 +21,15 @@ class Renderer {
 
     resize() {
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        this.canvas.width = window.innerWidth * dpr;
-        this.canvas.height = window.innerHeight * dpr;
+        // When game is CSS-rotated (portrait mobile), swap dimensions
+        const isPortraitMobile = window.innerWidth < 768 && window.innerHeight > window.innerWidth;
+        const w = isPortraitMobile ? window.innerHeight : window.innerWidth;
+        const h = isPortraitMobile ? window.innerWidth : window.innerHeight;
+        this.canvas.width = w * dpr;
+        this.canvas.height = h * dpr;
         this.ctx.scale(dpr, dpr);
-        this.w = window.innerWidth;
-        this.h = window.innerHeight;
+        this.w = w;
+        this.h = h;
         this._bgGrad = null; // invalidate cache
     }
 

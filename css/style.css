@@ -381,16 +381,19 @@ body {
     z-index: 15;
     pointer-events: none;
     display: flex;
-    justify-content: space-between;
+    justify-content: flex-end;
     align-items: flex-end;
     padding: 20px;
 }
 
 #joystick-zone {
-    width: 150px;
-    height: 150px;
-    position: relative;
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 50%;
+    height: 100%;
     pointer-events: auto;
+    z-index: 14;
 }
 #joystick-base {
     width: 120px;
@@ -399,12 +402,16 @@ body {
     background: rgba(77, 212, 255, 0.05);
     border: 2px solid rgba(77, 212, 255, 0.2);
     box-shadow: 0 0 15px rgba(77, 212, 255, 0.1);
-    position: absolute;
-    bottom: 10px;
-    left: 10px;
+    position: fixed;
     display: flex;
     align-items: center;
     justify-content: center;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    pointer-events: none;
+}
+#joystick-base.active {
+    opacity: 1;
 }
 #joystick-thumb {
     width: 50px;
@@ -481,6 +488,68 @@ body {
 .pull-btn.on-cooldown {
     opacity: 0.4;
     box-shadow: none;
+}
+
+/* ---- ZOOM CONTROLS ---- */
+#zoom-controls {
+    position: fixed;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: auto;
+}
+.zoom-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.25);
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    font-size: 22px;
+    font-weight: 700;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    line-height: 1;
+}
+.zoom-btn:active {
+    background: rgba(255, 255, 255, 0.25);
+    transform: scale(0.9);
+}
+/* Hide zoom on desktop */
+@media (min-width: 769px) {
+    #zoom-controls { display: none; }
+}
+
+/* ---- FORCE LANDSCAPE FOR GAME SCREEN ON MOBILE ---- */
+@media (max-width: 768px) and (orientation: portrait) {
+    #game-screen.active {
+        transform: rotate(90deg);
+        transform-origin: top left;
+        position: fixed;
+        top: 0;
+        left: 100vw;
+        width: 100vh;
+        height: 100vw;
+    }
+    #game-screen.active #game-hud {
+        top: env(safe-area-inset-left, 0px);
+    }
+    #game-screen.active #zoom-controls {
+        top: 50%;
+        right: 12px;
+        transform: translateY(-50%);
+    }
+    #game-screen.active #touch-controls {
+        bottom: env(safe-area-inset-right, 0px);
+    }
 }
 
 /* ---- OVERLAYS ---- */
