@@ -21,10 +21,8 @@ class Renderer {
 
     resize() {
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        // When game is CSS-rotated (portrait mobile), swap dimensions
-        const isPortraitMobile = window.innerWidth < 768 && window.innerHeight > window.innerWidth;
-        const w = isPortraitMobile ? window.innerHeight : window.innerWidth;
-        const h = isPortraitMobile ? window.innerWidth : window.innerHeight;
+        const w = window.innerWidth;
+        const h = window.innerHeight;
         this.canvas.width = w * dpr;
         this.canvas.height = h * dpr;
         this.ctx.scale(dpr, dpr);

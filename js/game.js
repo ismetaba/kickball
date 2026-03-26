@@ -83,6 +83,10 @@ class Game {
         this.VIRTUAL_H = 500;
 
         window.addEventListener('resize', () => this.onResize());
+        window.addEventListener('orientationchange', () => {
+            // Small delay to let the browser settle the new dimensions
+            setTimeout(() => this.onResize(), 150);
+        });
     }
 
     rebuildTeamCache() {
@@ -95,16 +99,16 @@ class Game {
         if (mapType === 'big') {
             this.VIRTUAL_W = 800;
             this.VIRTUAL_H = 500;
-            this.cameraZoom = isMobile ? 1.4 : 1;
+            this.cameraZoom = isMobile ? 2.2 : 1.4;
         } else if (mapType === 'huge') {
             this.VIRTUAL_W = 2400;
             this.VIRTUAL_H = 1600;
-            this.cameraZoom = 1.8; // zoom in — show portion of field around player
+            this.cameraZoom = 2.6; // zoom in — show portion of field around player
         } else {
             // Classic
             this.VIRTUAL_W = 1500;
             this.VIRTUAL_H = 1000;
-            this.cameraZoom = isMobile ? 1.4 : 1;
+            this.cameraZoom = isMobile ? 2.2 : 1.4;
         }
         this._cameraX = this.VIRTUAL_W / 2;
         this._cameraY = this.VIRTUAL_H / 2;
@@ -282,148 +286,6 @@ class Game {
         this.loop();
     }
 
-    createAI(type) {
-        switch (type) {
-            case 'trained':   return Trainer.getBestAgent();
-            case 'chaser':    return new ChaserAI();
-            case 'random':    return new RandomAI();
-            case 'defender':  return new DefenderAI();
-            case 'rule-based':
-            default:          return new AIController(this.settings.difficulty || 'normal');
-        }
-    }
-
-    startAIvsAI(redType, blueType) {
-        this.renderer.resize();
-        this._setVirtualSize(this.settings.map);
-        this._updateFieldViewScale();
-        this.field = new Field(this.VIRTUAL_W, this.VIRTUAL_H, this.settings.map);
-        this.ball = new Ball(this.field.centerX, this.field.centerY);
-
-        this.players = [];
-        this.aiControllers = [];
-        this.humanPlayer = null;
-        this.isSpectator = true;
-        this._aiVsAiTypes = { red: redType, blue: blueType };
-        this._baseGameSpeed = Physics.GAME_SPEED;
-
-        const positions = this.getSpawnPositions();
-
-        for (let i = 0; i < this.settings.teamSize; i++) {
-            const p = new Player(positions.red[i].x, positions.red[i].y, 'red', false);
-            this.players.push(p);
-            this.aiControllers.push({ player: p, ai: this.createAI(redType) });
-        }
-
-        for (let i = 0; i < this.settings.teamSize; i++) {
-            const p = new Player(positions.blue[i].x, positions.blue[i].y, 'blue', false);
-            this.players.push(p);
-            this.aiControllers.push({ player: p, ai: this.createAI(blueType) });
-        }
-
-        this.rebuildTeamCache();
-        this.powerUpManager = new PowerUpManager(this.field);
-        this.powerUpManager.enabled = this.settings.powerups;
-
-        this.redScore = 0;
-        this.blueScore = 0;
-        this.timeRemaining = this.settings.duration * 1000;
-        this.isRunning = true;
-        this.isPaused = false;
-        this.matchOver = false;
-        this.isGoalScored = false;
-        this.goalTimer = 0;
-        this.kickoffTeam = null;
-        this.kickoffActive = false;
-        this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
-        this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
-        this.timeScale = 1.0;
-        this.combo = { team: null, count: 0 };
-        this.suddenDeath = false;
-        this.suddenDeathTimer = 0;
-        this.suddenDeathShrink = 0;
-        Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
-
-        this.applyMapPhysics();
-        this.lastTime = performance.now();
-        Sound.whistle(false);
-        Sound.startMusic();
-        this.loop();
-    }
-
-    setSpectatorSpeed(multiplier) {
-        Physics.GAME_SPEED = this._baseGameSpeed * multiplier;
-    }
-
-    startLocal1v1() {
-        this.renderer.resize();
-        this._setVirtualSize(this.settings.map || 'classic');
-        this._updateFieldViewScale();
-        this.field = new Field(this.VIRTUAL_W, this.VIRTUAL_H, this.settings.map || 'classic');
-        this.ball = new Ball(this.field.centerX, this.field.centerY);
-
-        this.players = [];
-        this.aiControllers = [];
-        this.isLocal1v1 = true;
-
-        const positions = this.getSpawnPositions();
-        const teamSize = this.settings.teamSize;
-
-        // Red team: P1 is human
-        for (let i = 0; i < teamSize; i++) {
-            const isHuman = (i === 0);
-            const p = new Player(positions.red[i].x, positions.red[i].y, 'red', isHuman);
-            this.players.push(p);
-            if (isHuman) {
-                this.humanPlayer = p;
-            } else {
-                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'normal') });
-            }
-        }
-
-        // Blue team: P2 is human
-        for (let i = 0; i < teamSize; i++) {
-            const isHuman = (i === 0);
-            const p = new Player(positions.blue[i].x, positions.blue[i].y, 'blue', isHuman);
-            this.players.push(p);
-            if (isHuman) {
-                this.humanPlayer2 = p;
-            } else {
-                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'normal') });
-            }
-        }
-
-        this.rebuildTeamCache();
-        this.powerUpManager = new PowerUpManager(this.field);
-        this.powerUpManager.enabled = this.settings.powerups !== false;
-
-        this.redScore = 0;
-        this.blueScore = 0;
-        this.timeRemaining = (this.settings.duration || 180) * 1000;
-        this.isRunning = true;
-        this.isPaused = false;
-        this.matchOver = false;
-        this.isGoalScored = false;
-        this.goalTimer = 0;
-        this.kickoffTeam = null;
-        this.kickoffActive = false;
-        this.practiceMode = false;
-        this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
-        this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
-        this.timeScale = 1.0;
-        this.combo = { team: null, count: 0 };
-        this.suddenDeath = false;
-        this.suddenDeathTimer = 0;
-        this.suddenDeathShrink = 0;
-        Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
-
-        this.applyMapPhysics();
-        this.lastTime = performance.now();
-        Sound.whistle(false);
-        Sound.startMusic();
-        this.loop();
-    }
-
     startPractice() {
         this.renderer.resize();
         this._setVirtualSize(this.settings.map);
@@ -455,108 +317,6 @@ class Game {
         this.kickoffActive = false;
         this.practiceMode = true;
         this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
-        this.combo = { team: null, count: 0 };
-        this.suddenDeath = false;
-        this.suddenDeathTimer = 0;
-        this.suddenDeathShrink = 0;
-        Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
-
-        this.applyMapPhysics();
-        this.lastTime = performance.now();
-        Sound.whistle(false);
-        Sound.startMusic();
-        this.loop();
-    }
-
-    startOnlineMatch(settings, network, isHost) {
-        this.network = network;
-        this.isOnline = true;
-        this.isHost = isHost;
-        this.settings = { ...settings };
-
-        this.renderer.resize();
-        this._setVirtualSize(this.settings.map || 'classic');
-        this._updateFieldViewScale();
-        this.field = new Field(this.VIRTUAL_W, this.VIRTUAL_H, this.settings.map || 'classic');
-        this.ball = new Ball(this.field.centerX, this.field.centerY);
-
-        this.players = [];
-        this.aiControllers = [];
-
-        const positions = this.getSpawnPositions();
-        const teamSize = this.settings.teamSize;
-
-        // Red team: first player is human (local for host, remote for guest)
-        for (let i = 0; i < teamSize; i++) {
-            const isRedHuman = (i === 0);
-            const p = new Player(positions.red[i].x, positions.red[i].y, 'red', isRedHuman);
-            this.players.push(p);
-            if (isRedHuman) {
-                if (isHost) this.humanPlayer = p;
-                else this.remoteHumanPlayer = p;
-            } else {
-                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'normal') });
-            }
-        }
-
-        // Blue team: first player is human (remote for host, local for guest)
-        for (let i = 0; i < teamSize; i++) {
-            const isBlueHuman = (i === 0);
-            const p = new Player(positions.blue[i].x, positions.blue[i].y, 'blue', isBlueHuman);
-            this.players.push(p);
-            if (isBlueHuman) {
-                if (isHost) this.remoteHumanPlayer = p;
-                else this.humanPlayer = p;
-            } else {
-                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'normal') });
-            }
-        }
-
-        // Setup network callbacks
-        if (isHost) {
-            network.onRemoteInput = (inputData) => {
-                Object.assign(this.remoteInput, inputData);
-            };
-        } else {
-            network.onStateSnapshot = (snapshot) => {
-                network.deserializeState(snapshot, this);
-            };
-            network.onGoalScored = (data) => {
-                const notif = document.getElementById('goal-notification');
-                notif.querySelector('.goal-text').textContent = 'GOAL!';
-                notif.querySelector('.goal-scorer').textContent = data.team.toUpperCase() + ' Team';
-                notif.classList.remove('hidden');
-                this.isGoalScored = true;
-                this.goalTimer = 2500;
-                this.kickoffTeam = data.team === 'red' ? 'blue' : 'red';
-                this.renderer.triggerShake(1.0);
-                this.renderer.spawnConfetti(data.team);
-            };
-            network.onMatchEnd = (data) => {
-                this.redScore = data.red;
-                this.blueScore = data.blue;
-                this.endMatch();
-            };
-        }
-
-        this.rebuildTeamCache();
-        this.powerUpManager = new PowerUpManager(this.field);
-        this.powerUpManager.enabled = this.settings.powerups !== false;
-
-        this.redScore = 0;
-        this.blueScore = 0;
-        this.timeRemaining = (this.settings.duration || 180) * 1000;
-        this.isRunning = true;
-        this.isPaused = false;
-        this.matchOver = false;
-        this.isGoalScored = false;
-        this.goalTimer = 0;
-        this.kickoffTeam = null;
-        this.kickoffActive = false;
-        this.practiceMode = false;
-        this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
-        this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
-        this.timeScale = 1.0;
         this.combo = { team: null, count: 0 };
         this.suddenDeath = false;
         this.suddenDeathTimer = 0;
@@ -1794,32 +1554,15 @@ class Game {
         document.getElementById('pause-overlay').classList.add('hidden');
         document.getElementById('result-overlay').classList.add('hidden');
         document.getElementById('goal-notification').classList.add('hidden');
-        if (this._aiVsAiTypes) {
-            this.startAIvsAI(this._aiVsAiTypes.red, this._aiVsAiTypes.blue);
-        } else {
-            this.startMatch();
-        }
+        this.startMatch();
     }
 
     quit() {
         this.isRunning = false;
-        this.isLocal1v1 = false;
-        this.isSpectator = false;
-        this._aiVsAiTypes = null;
-        Physics.GAME_SPEED = this._baseGameSpeed;
         this.resetMapPhysics();
         Sound.stopMusic();
-        this.humanPlayer2 = null;
-        if (this.isOnline && this.network) {
-            this.network.destroy();
-            this.network = null;
-            this.isOnline = false;
-            this.isHost = false;
-        }
         document.getElementById('pause-overlay').classList.add('hidden');
         document.getElementById('result-overlay').classList.add('hidden');
         document.getElementById('goal-notification').classList.add('hidden');
-        document.getElementById('disconnect-overlay').classList.add('hidden');
-        document.getElementById('online-hud').classList.add('hidden');
     }
 }
