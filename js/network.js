@@ -1,326 +1,404 @@
-// Network manager for online multiplayer via PeerJS (WebRTC)
+// WebSocket network manager for online multiplayer
+// Uses proper interpolation: renders remote entities ~100ms behind real-time
+// by blending between two known server states.
 class NetworkManager {
     constructor() {
-        this.peer = null;
-        this.conn = null;
-        this.isHost = false;
+        this.ws = null;
+        this.playerId = null;
+        this.roomCode = null;
         this.isOnline = false;
-        this.roomCode = '';
-        this.status = 'idle';
+        this.isHost = false;
+        this.mySlot = null;
+        this.latency = 0;
+
+        // Server URL — always connect to Fly.io production server
+        this.serverUrl = 'wss://kickzone-server.fly.dev';
+
+        // Input throttle — send every frame at 60Hz for minimal latency
+        this.lastInputSend = 0;
+        this.INPUT_SEND_INTERVAL = 16; // ~60Hz
+
+        // --- Interpolation state ---
+        // We buffer server snapshots and render remote entities between two
+        // known states. The render point is (now - renderDelay) so we're always
+        // interpolating between known data, never extrapolating.
+        this.stateBuffer = [];     // [{...state, _time: ms}, ...] sorted by _time
+        this.renderDelay = 50;     // ms behind real-time (lower = more responsive)
+        this._serverTimeOffset = 0; // local_time - server_time estimate
+
+        // Target positions for local player correction (set by interpolation)
+        this.serverPlayerPos = null; // {x, y, vx, vy} from latest state for mySlot
 
         // Callbacks
-        this.onStatusChange = null;
-        this.onRemoteInput = null;
-        this.onStateSnapshot = null;
-        this.onMatchStart = null;
-        this.onGoalScored = null;
+        this.onConnected = null;
+        this.onDisconnected = null;
+        this.onError = null;
+        this.onLobbyList = null;
+        this.onRoomCreated = null;
+        this.onRoomJoined = null;
+        this.onRoomUpdate = null;
+        this.onMatchStarting = null;
+        this.onGoal = null;
+        this.onGameEvent = null;
         this.onMatchEnd = null;
-        this.onDisconnect = null;
 
-        // Latency tracking
-        this.latency = 0;
-        this.pingInterval = null;
+        // Ping
+        this._pingInterval = null;
+        this._pingsSent = 0;
 
-        // Throttle timers
-        this.lastStateSend = 0;
-        this.lastInputSend = 0;
-        this.STATE_SEND_INTERVAL = 33;  // ~30Hz
-        this.INPUT_SEND_INTERVAL = 25;  // ~40Hz
+        // Cached DOM refs
+        this._scoreRedEl = null;
+        this._scoreBlueEl = null;
+        this._timerEl = null;
+        this._lastTimerSec = -1;
+        this._lastRedScore = -1;
+        this._lastBlueScore = -1;
     }
 
-    generateRoomCode() {
-        const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-        let code = '';
-        for (let i = 0; i < 4; i++) {
-            code += chars[Math.floor(Math.random() * chars.length)];
+    connect() {
+        if (this.ws) this.disconnect();
+
+        let url = this.serverUrl;
+        if (!url.startsWith('ws')) {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            url = protocol + '//' + url;
         }
-        return code;
-    }
 
-    // --- HOST ---
-    hostGame() {
-        this.isHost = true;
-        this.roomCode = this.generateRoomCode();
-        this.setStatus('creating', 'Creating room...');
+        this.ws = new WebSocket(url);
 
-        const peerId = 'kickzone-' + this.roomCode.toLowerCase();
-        this.peer = new Peer(peerId, { debug: 0 });
-
-        this.peer.on('open', () => {
-            this.setStatus('waiting', 'Waiting for opponent...');
-        });
-
-        this.peer.on('connection', (conn) => {
-            this.conn = conn;
-            this.setupConnection(conn);
-        });
-
-        this.peer.on('error', (err) => {
-            if (err.type === 'unavailable-id') {
-                this.peer.destroy();
-                this.roomCode = this.generateRoomCode();
-                this.hostGame();
-                return;
-            }
-            this.setStatus('error', 'Connection error: ' + err.type);
-        });
-
-        return this.roomCode;
-    }
-
-    // --- GUEST ---
-    joinGame(roomCode) {
-        this.isHost = false;
-        this.roomCode = roomCode.toUpperCase();
-        this.setStatus('connecting', 'Connecting...');
-
-        this.peer = new Peer(undefined, { debug: 0 });
-
-        this.peer.on('open', () => {
-            const hostPeerId = 'kickzone-' + this.roomCode.toLowerCase();
-            const conn = this.peer.connect(hostPeerId, { reliable: true });
-            this.conn = conn;
-            this.setupConnection(conn);
-        });
-
-        this.peer.on('error', (err) => {
-            if (err.type === 'peer-unavailable') {
-                this.setStatus('error', 'Room not found. Check the code.');
-            } else {
-                this.setStatus('error', 'Connection error: ' + err.type);
-            }
-        });
-    }
-
-    setupConnection(conn) {
-        conn.on('open', () => {
+        this.ws.onopen = () => {
             this.isOnline = true;
-            this.setStatus('connected', 'Connected!');
-            this.startPingLoop();
-        });
-
-        conn.on('data', (data) => {
-            this.handleMessage(data);
-        });
-
-        conn.on('close', () => this.handleDisconnect());
-        conn.on('error', () => this.handleDisconnect());
-    }
-
-    // --- Message Protocol ---
-    handleMessage(msg) {
-        switch (msg.t) {
-            case 'input':
-                if (this.onRemoteInput) this.onRemoteInput(msg.d);
-                break;
-            case 'state':
-                if (this.onStateSnapshot) this.onStateSnapshot(msg.d);
-                break;
-            case 'start':
-                if (this.onMatchStart) this.onMatchStart(msg.d);
-                break;
-            case 'ping':
-                this.send({ t: 'pong', d: msg.d });
-                break;
-            case 'pong':
-                this.latency = Math.round((performance.now() - msg.d) / 2);
-                break;
-            case 'goal':
-                if (this.onGoalScored) this.onGoalScored(msg.d);
-                break;
-            case 'end':
-                if (this.onMatchEnd) this.onMatchEnd(msg.d);
-                break;
-        }
-    }
-
-    send(data) {
-        if (this.conn && this.conn.open) {
-            this.conn.send(data);
-        }
-    }
-
-    // --- State Serialization (compact) ---
-    serializeState(game) {
-        const players = game.players.map(p => ({
-            x: Math.round(p.x),
-            y: Math.round(p.y),
-            vx: Math.round(p.vx * 10) / 10,
-            vy: Math.round(p.vy * 10) / 10,
-            s: Math.round(p.stunTimer),
-            k: Math.round(p.kickChargeRatio * 100) / 100,
-            pu: p.powerUp || 0,
-            pt: Math.round(p.powerUpTimer),
-            r: p.radius,
-        }));
-
-        const ball = {
-            x: Math.round(game.ball.x),
-            y: Math.round(game.ball.y),
-            vx: Math.round(game.ball.vx * 10) / 10,
-            vy: Math.round(game.ball.vy * 10) / 10,
-            sp: Math.round((game.ball.spin || 0) * 10) / 10,
-            sk: game.ball.superKick || 0,
-            gh: game.ball.ghost ? 1 : 0,
-            gt: Math.round(game.ball.ghostTimer || 0),
+            this._startPing();
+            if (this.onConnected) this.onConnected();
         };
 
-        const state = {
-            p: players,
-            b: ball,
-            rs: game.redScore,
-            bs: game.blueScore,
-            t: Math.round(game.timeRemaining),
-            mr: Math.round(game.momentum.red * 100) / 100,
-            mb: Math.round(game.momentum.blue * 100) / 100,
-            ts: game.timeScale,
-            ig: game.isGoalScored,
+        this.ws.onmessage = (e) => {
+            try {
+                this._handleMessage(JSON.parse(e.data));
+            } catch (err) {
+                // ignore bad messages
+            }
         };
 
-        // Include powerups on field
-        if (game.powerUpManager && game.powerUpManager.powerUps) {
-            state.pu = game.powerUpManager.powerUps.map(pu => ({
-                x: Math.round(pu.x),
-                y: Math.round(pu.y),
-                tid: pu.type ? pu.type.id : null,
-            }));
-        }
+        this.ws.onclose = () => {
+            this.isOnline = false;
+            this._stopPing();
+            if (this.onDisconnected) this.onDisconnected();
+        };
 
-        return state;
-    }
-
-    // Guest applies state snapshot
-    deserializeState(snapshot, game) {
-        const lerpRemote = 0.5;   // Other players — snap faster
-        const lerpLocal = 0.15;   // Own player — trust local prediction
-        const lerpBall = 0.5;
-
-        for (let i = 0; i < snapshot.p.length && i < game.players.length; i++) {
-            const sp = snapshot.p[i];
-            const gp = game.players[i];
-            // Use softer lerp for the local player (client-side predicted)
-            const factor = (gp === game.humanPlayer) ? lerpLocal : lerpRemote;
-            gp.x += (sp.x - gp.x) * factor;
-            gp.y += (sp.y - gp.y) * factor;
-            gp.vx = sp.vx;
-            gp.vy = sp.vy;
-            gp.stunTimer = sp.s;
-            if (gp !== game.humanPlayer) gp.kickChargeRatio = sp.k;
-            gp.powerUp = sp.pu || null;
-            gp.powerUpTimer = sp.pt;
-            gp.radius = sp.r;
-        }
-
-        game.ball.x += (snapshot.b.x - game.ball.x) * lerpBall;
-        game.ball.y += (snapshot.b.y - game.ball.y) * lerpBall;
-        game.ball.vx = snapshot.b.vx;
-        game.ball.vy = snapshot.b.vy;
-        game.ball.spin = snapshot.b.sp;
-        game.ball.superKick = snapshot.b.sk;
-        game.ball.ghost = !!snapshot.b.gh;
-        game.ball.ghostTimer = snapshot.b.gt || 0;
-
-        game.redScore = snapshot.rs;
-        game.blueScore = snapshot.bs;
-        game.timeRemaining = snapshot.t;
-        game.momentum.red = snapshot.mr;
-        game.momentum.blue = snapshot.mb;
-        game.timeScale = snapshot.ts;
-        game.isGoalScored = snapshot.ig;
-
-        // Update HUD
-        document.getElementById('red-score').textContent = game.redScore;
-        document.getElementById('blue-score').textContent = game.blueScore;
-        const secs = Math.ceil(game.timeRemaining / 1000);
-        const m = Math.floor(secs / 60);
-        const s = secs % 60;
-        document.getElementById('timer').textContent = `${m}:${s.toString().padStart(2, '0')}`;
-
-        // Update momentum bars
-        const redBar = document.getElementById('momentum-fill-red');
-        const blueBar = document.getElementById('momentum-fill-blue');
-        if (redBar) redBar.style.width = (game.momentum.red / game.momentum.max * 100) + '%';
-        if (blueBar) blueBar.style.width = (game.momentum.blue / game.momentum.max * 100) + '%';
-
-        // Sync powerups
-        if (snapshot.pu && game.powerUpManager) {
-            game.powerUpManager.powerUps = snapshot.pu.filter(sp => sp.tid).map(sp => ({
-                x: sp.x, y: sp.y,
-                radius: 12,
-                type: game.powerUpManager.types.find(t => t.id === sp.tid),
-                bobTimer: 0,
-                scale: 1,
-            }));
-        }
-    }
-
-    serializeInput(input) {
-        return {
-            x: Math.round(input.x * 100) / 100,
-            y: Math.round(input.y * 100) / 100,
-            kickCharging: input.kickCharging,
-            kickChargeTime: input.kickChargeTime,
-            kickRelease: input.kickRelease,
-            switchPlayer: input.switchPlayer,
+        this.ws.onerror = () => {
+            if (this.onError) this.onError('Connection failed');
         };
     }
 
-    // Host: send state (throttled)
-    sendState(game) {
-        const now = performance.now();
-        if (now - this.lastStateSend < this.STATE_SEND_INTERVAL) return;
-        this.lastStateSend = now;
-        this.send({ t: 'state', d: this.serializeState(game) });
+    disconnect() {
+        this._stopPing();
+        if (this.ws) { this.ws.close(); this.ws = null; }
+        this.isOnline = false;
+        this.roomCode = null;
+        this.mySlot = null;
+        this.stateBuffer.length = 0;
     }
 
-    // Guest: send input (throttled, but one-shot actions always send immediately)
+    send(msg) {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify(msg));
+        }
+    }
+
+    // --- Lobby Operations ---
+    createRoom(name, settings) { this.send({ t: 'create_room', d: { name, settings } }); }
+    joinRoom(roomCode, name, team) { this.send({ t: 'join_room', d: { roomCode, name, team } }); }
+    leaveRoom() { this.send({ t: 'leave_room', d: {} }); this.roomCode = null; this.mySlot = null; }
+    listLobby() { this.send({ t: 'list_lobby', d: {} }); }
+    startMatch() { this.send({ t: 'start_match', d: {} }); }
+    switchTeam(team) { this.send({ t: 'switch_team', d: { team } }); }
+    updateRoomSettings(settings) { this.send({ t: 'update_settings', d: settings }); }
+    quickMatch(name) { this.send({ t: 'quick_match', d: { name } }); }
+
+    // --- In-Game Input ---
     sendInput(input) {
         const now = performance.now();
-        const hasOneShot = input.kickRelease || input.switchPlayer;
-        if (!hasOneShot && now - this.lastInputSend < this.INPUT_SEND_INTERVAL) return;
+        const isOneShot = input.kickRelease || input.switchPlayer;
+        if (!isOneShot && now - this.lastInputSend < this.INPUT_SEND_INTERVAL) return false;
+
+        // Send current charge time while charging (not just on release)
+        const chargeTime = input.kickCharging
+            ? Math.min(performance.now() - (input.kickChargeStart || performance.now()), 1500)
+            : (input.kickChargeTime || 0);
+
+        this.send({
+            t: 'input',
+            d: {
+                x: (input.x * 100 + 0.5) | 0,
+                y: (input.y * 100 + 0.5) | 0,
+                kc: input.kickCharging ? 1 : 0,
+                kt: chargeTime | 0,
+                kr: input.kickRelease ? 1 : 0,
+                sp: input.switchPlayer ? 1 : 0,
+                pl: input.pull ? 1 : 0,
+            }
+        });
+
         this.lastInputSend = now;
-        this.send({ t: 'input', d: this.serializeInput(input) });
-        return true; // signal that input was actually sent
+        return true;
     }
 
-    sendMatchStart(settings) {
-        this.send({ t: 'start', d: settings });
+    // --- Core: Interpolate between two server states ---
+    // Call this every frame from the render loop.
+    // Returns an object with interpolated positions for all entities,
+    // or null if not enough data yet.
+    interpolate(game) {
+        const buf = this.stateBuffer;
+        if (buf.length === 0) return;
+
+        const now = performance.now();
+        const renderTime = now - this.renderDelay;
+
+        // Find the two states to interpolate between
+        // We want: prev._time <= renderTime <= next._time
+        let prev = null, next = null;
+        for (let i = 1; i < buf.length; i++) {
+            if (buf[i]._time >= renderTime) {
+                prev = buf[i - 1];
+                next = buf[i];
+                break;
+            }
+        }
+
+        // If renderTime is past all buffered states, use the latest and extrapolate slightly
+        if (!prev && buf.length >= 2) {
+            prev = buf[buf.length - 2];
+            next = buf[buf.length - 1];
+        } else if (!prev) {
+            // Only one state — just snap to it
+            this._applyState(game, buf[buf.length - 1], buf[buf.length - 1], 1);
+            return;
+        }
+
+        const range = next._time - prev._time;
+        // Allow up to 1.5x extrapolation for smoother motion when packets are slightly delayed
+        const alpha = range > 0 ? Math.max(0, Math.min(1.5, (renderTime - prev._time) / range)) : 1;
+
+        this._applyState(game, prev, next, alpha);
+
+        // Prune old states (keep at least 2 before renderTime for safety)
+        while (buf.length > 4 && buf[1]._time < renderTime) {
+            buf.shift();
+        }
+    }
+
+    // Hermite interpolation: uses position + velocity at both endpoints
+    // Produces much smoother curves than linear interpolation
+    _hermite(p0, v0, p1, v1, t, dt) {
+        // dt = time between states in seconds (for velocity scaling)
+        const t2 = t * t;
+        const t3 = t2 * t;
+        const h00 = 2*t3 - 3*t2 + 1;
+        const h10 = t3 - 2*t2 + t;
+        const h01 = -2*t3 + 3*t2;
+        const h11 = t3 - t2;
+        return h00 * p0 + h10 * (v0 * dt) + h01 * p1 + h11 * (v1 * dt);
+    }
+
+    _applyState(game, prev, next, alpha) {
+        const mySlot = this.mySlot;
+        const players = game.players;
+        const ball = game.ball;
+        // Time between states in seconds (for hermite velocity scaling)
+        const stateDt = (next._time - prev._time) / 1000 || 0.025;
+        // Scale factor: server velocity is in pixels/frame (~16.67ms), convert to px/sec
+        const velScale = 60; // 60 frames/sec
+
+        // Interpolate remote players, store server pos for local player
+        for (let i = 0; i < players.length && i < next.p.length && i < prev.p.length; i++) {
+            const pp = prev.p[i];
+            const np = next.p[i];
+            const p = players[i];
+
+            if (i === mySlot) {
+                // Use hermite for smoother server target
+                const targetX = this._hermite(pp.x, pp.vx * velScale, np.x, np.vx * velScale, Math.min(alpha, 1), stateDt);
+                const targetY = this._hermite(pp.y, pp.vy * velScale, np.y, np.vy * velScale, Math.min(alpha, 1), stateDt);
+                const targetVx = pp.vx + (np.vx - pp.vx) * alpha;
+                const targetVy = pp.vy + (np.vy - pp.vy) * alpha;
+                this.serverPlayerPos = { x: targetX, y: targetY, vx: targetVx, vy: targetVy };
+                p.stunTimer = np.s || 0;
+                p.powerUp = np.pu;
+                p.powerUpTimer = np.pt || 0;
+                p.pullActive = np.pa === 1;
+                p.pullCooldown = np.pc || 0;
+            } else {
+                // Remote players: hermite interpolation for smooth curves
+                const t = Math.min(alpha, 1);
+                p.x = this._hermite(pp.x, pp.vx * velScale, np.x, np.vx * velScale, t, stateDt);
+                p.y = this._hermite(pp.y, pp.vy * velScale, np.y, np.vy * velScale, t, stateDt);
+                // When extrapolating past buffer (alpha > 1), use velocity-based extrapolation
+                if (alpha > 1) {
+                    const extra = (alpha - 1) * (next._time - prev._time) / 16.67;
+                    p.x = np.x + np.vx * extra;
+                    p.y = np.y + np.vy * extra;
+                }
+                p.vx = pp.vx + (np.vx - pp.vx) * alpha;
+                p.vy = pp.vy + (np.vy - pp.vy) * alpha;
+                p.stunTimer = np.s || 0;
+                p.kickChargeRatio = np.k || 0;
+                p.powerUp = np.pu;
+                p.powerUpTimer = np.pt || 0;
+                p.pullActive = np.pa === 1;
+                p.pullCooldown = np.pc || 0;
+            }
+        }
+
+        // Ball: hermite interpolation for buttery smooth movement
+        const bp = prev.b;
+        const bn = next.b;
+        const bt = Math.min(alpha, 1);
+        ball.x = this._hermite(bp.x, bp.vx * velScale, bn.x, bn.vx * velScale, bt, stateDt);
+        ball.y = this._hermite(bp.y, bp.vy * velScale, bn.y, bn.vy * velScale, bt, stateDt);
+        // Extrapolate ball when past buffer
+        if (alpha > 1) {
+            const extra = (alpha - 1) * (next._time - prev._time) / 16.67;
+            ball.x = bn.x + bn.vx * extra;
+            ball.y = bn.y + bn.vy * extra;
+        }
+        ball.vx = bp.vx + (bn.vx - bp.vx) * alpha;
+        ball.vy = bp.vy + (bn.vy - bp.vy) * alpha;
+        ball.spin = bn.sp;
+        ball.superKick = bn.sk;
+        ball.superTarget = bn.st;
+        ball.fireLevel = bn.fl;
+        ball.ghost = bn.gh === 1;
+
+        // Match state from latest
+        const s = next;
+        game.timeRemaining = s.t;
+        game.suddenDeath = s.sd === 1;
+        game.suddenDeathShrink = s.sds;
+        game.kickoffActive = s.ka === 1;
+        game.kickoffTeam = s.kt;
+        game.isGoalScored = s.ig === 1;
+        game.timeScale = s.ts || 1;
+
+        // Scores — cache DOM refs and only update on change
+        if (!this._scoreRedEl) {
+            this._scoreRedEl = document.getElementById('red-score');
+            this._scoreBlueEl = document.getElementById('blue-score');
+            this._timerEl = document.getElementById('timer');
+        }
+        if (this._lastRedScore !== s.rs || this._lastBlueScore !== s.bs) {
+            game.redScore = s.rs;
+            game.blueScore = s.bs;
+            this._lastRedScore = s.rs;
+            this._lastBlueScore = s.bs;
+            this._scoreRedEl.textContent = s.rs;
+            this._scoreBlueEl.textContent = s.bs;
+        }
+
+        // Timer — once per second
+        const secs = (s.t / 1000 + 0.99) | 0; // fast ceil
+        if (this._lastTimerSec !== secs) {
+            this._lastTimerSec = secs;
+            const m = (secs / 60) | 0;
+            const sec = secs % 60;
+            this._timerEl.textContent = m + ':' + (sec < 10 ? '0' : '') + sec;
+            this._timerEl.style.color = game.suddenDeath ? '#ff4444' : '';
+        }
+
+        // Power-ups
+        if (game.powerUpManager) {
+            const puData = s.pu || [];
+            const existing = game.powerUpManager.powerUps;
+            if (puData.length !== existing.length) {
+                if (!this._puTypeMap) {
+                    this._puTypeMap = {};
+                    for (const t of game.powerUpManager.types) this._puTypeMap[t.id] = t;
+                }
+                game.powerUpManager.powerUps = puData.map(pu => ({
+                    x: pu.x, y: pu.y, radius: 14,
+                    type: this._puTypeMap[pu.tid] || game.powerUpManager.types[0],
+                    bobTimer: 0, scale: 1, rotateTimer: 0, pulseTimer: 0, spawnTime: performance.now(),
+                }));
+            } else {
+                for (let i = 0; i < puData.length; i++) {
+                    existing[i].x = puData[i].x;
+                    existing[i].y = puData[i].y;
+                }
+            }
+        }
+    }
+
+    // --- Message Handling ---
+    _handleMessage(msg) {
+        switch (msg.t) {
+            case 'room_created':
+                this.roomCode = msg.d.roomCode;
+                this.isHost = true;
+                if (this.onRoomCreated) this.onRoomCreated(msg.d);
+                break;
+            case 'room_joined':
+                this.roomCode = msg.d.roomCode;
+                this.isHost = msg.d.isHost;
+                if (msg.d.playerId) this.playerId = msg.d.playerId;
+                if (this.onRoomJoined) this.onRoomJoined(msg.d);
+                break;
+            case 'room_update':
+                // Update isHost from hostId sent by server
+                if (msg.d.hostId) {
+                    this.isHost = (msg.d.hostId === this.playerId);
+                }
+                if (this.onRoomUpdate) this.onRoomUpdate(msg.d);
+                break;
+            case 'lobby_list':
+                if (this.onLobbyList) this.onLobbyList(msg.d);
+                break;
+            case 'match_starting':
+                this.mySlot = msg.d.yourSlot;
+                this.stateBuffer.length = 0;
+                this.serverPlayerPos = null;
+                if (this.onMatchStarting) this.onMatchStarting(msg.d);
+                break;
+            case 'state':
+                msg.d._time = performance.now();
+                this.stateBuffer.push(msg.d);
+                // Cap buffer at 6 states (at 40Hz = 150ms window)
+                // Smaller buffer = less memory, faster search
+                while (this.stateBuffer.length > 6) this.stateBuffer.shift();
+                break;
+            case 'goal':
+                if (this.onGoal) this.onGoal(msg.d);
+                break;
+            case 'event':
+                if (this.onGameEvent) this.onGameEvent(msg.d);
+                break;
+            case 'match_end':
+                if (this.onMatchEnd) this.onMatchEnd(msg.d);
+                break;
+            case 'pong':
+                if (msg.d && msg.d.t) {
+                    const rtt = performance.now() - msg.d.t;
+                    // Smooth latency estimate
+                    this.latency = this.latency * 0.8 + rtt * 0.2;
+                    // Adjust render delay: keep it tight for responsiveness
+                    // At 30Hz state rate, inter-frame gap is ~33ms
+                    // We need just enough buffer to have 2 states to interpolate between
+                    this.renderDelay = Math.max(35, Math.min(100, 35 + this.latency * 0.3));
+                }
+                break;
+            case 'error':
+                if (this.onError) this.onError(msg.d.message);
+                break;
+        }
     }
 
     // --- Ping ---
-    startPingLoop() {
-        this.pingInterval = setInterval(() => {
-            if (this.conn && this.conn.open) {
-                this.send({ t: 'ping', d: performance.now() });
-            }
-        }, 2000);
+    _startPing() {
+        this._pingInterval = setInterval(() => {
+            this.send({ t: 'ping', d: { t: performance.now() } });
+        }, 1000);
     }
 
-    setStatus(status, message) {
-        this.status = status;
-        if (this.onStatusChange) this.onStatusChange(status, message);
-    }
-
-    handleDisconnect() {
-        this.isOnline = false;
-        this.setStatus('disconnected', 'Opponent disconnected');
-        this.stopPingLoop();
-        if (this.onDisconnect) this.onDisconnect();
-    }
-
-    stopPingLoop() {
-        if (this.pingInterval) {
-            clearInterval(this.pingInterval);
-            this.pingInterval = null;
-        }
-    }
-
-    destroy() {
-        this.stopPingLoop();
-        if (this.conn) { this.conn.close(); this.conn = null; }
-        if (this.peer) { this.peer.destroy(); this.peer = null; }
-        this.isOnline = false;
-        this.isHost = false;
-        this.status = 'idle';
+    _stopPing() {
+        if (this._pingInterval) { clearInterval(this._pingInterval); this._pingInterval = null; }
     }
 }

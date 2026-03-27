@@ -375,53 +375,49 @@ class Renderer {
         // Decay super kick
         if (isSuper && ballSpeed < 3) ball.superKick = 0;
 
-        // Trail (flat array based — no object allocation)
-        if ((isSuper || isFire) && ballSpeed > 2) {
-            // Fire trail
-            const len = ball.trail.length;
-            for (let i = 0; i < len; i += 2) {
-                const idx = i >> 1;
-                const alpha = 1 - idx / (len / 2);
-                if (alpha <= 0) continue;
-                if (isBlue) {
-                    ctx.fillStyle = `rgba(${Math.floor(80 + alpha * 80)},${Math.floor(160 + alpha * 60)},255,${alpha * 0.7})`;
-                } else {
-                    ctx.fillStyle = `rgba(255,${Math.floor(100 + alpha * 120)},${Math.floor(alpha * 30)},${alpha * 0.6})`;
+        // Trail (circular buffer based — O(1) per frame)
+        const trailPts = ball.getTrailPoints ? ball.getTrailPoints() : [];
+        const trailLen = trailPts.length;
+        if (trailLen > 0) {
+            if ((isSuper || isFire) && ballSpeed > 2) {
+                for (let i = 0; i < trailLen; i += 2) {
+                    const alpha = 1 - (i >> 1) / (trailLen / 2);
+                    if (alpha <= 0) continue;
+                    if (isBlue) {
+                        ctx.fillStyle = `rgba(${80 + (alpha * 80) | 0},${160 + (alpha * 60) | 0},255,${alpha * 0.7})`;
+                    } else {
+                        ctx.fillStyle = `rgba(255,${100 + (alpha * 120) | 0},${(alpha * 30) | 0},${alpha * 0.6})`;
+                    }
+                    ctx.beginPath();
+                    ctx.arc(trailPts[i], trailPts[i + 1], ball.radius * alpha * 1.2, 0, Math.PI * 2);
+                    ctx.fill();
                 }
-                ctx.beginPath();
-                ctx.arc(ball.trail[i], ball.trail[i + 1], ball.radius * alpha * 1.2, 0, Math.PI * 2);
-                ctx.fill();
-            }
 
-            // Fire glow (simple circle)
-            ctx.globalAlpha = 0.25;
-            ctx.fillStyle = isBlue ? '#4488ff' : '#ff8800';
-            ctx.beginPath();
-            ctx.arc(ball.x, ball.y, ball.radius * 2.5, 0, Math.PI * 2);
-            ctx.fill();
-
-            // Level 2: pulsing outer ring
-            if (isBlue) {
-                const pulse = 0.15 + Math.sin(performance.now() * 0.01) * 0.1;
-                ctx.globalAlpha = pulse;
-                ctx.strokeStyle = '#88ccff';
-                ctx.lineWidth = 2;
+                ctx.globalAlpha = 0.25;
+                ctx.fillStyle = isBlue ? '#4488ff' : '#ff8800';
                 ctx.beginPath();
-                ctx.arc(ball.x, ball.y, ball.radius * 3 + Math.sin(performance.now() * 0.008) * 4, 0, Math.PI * 2);
-                ctx.stroke();
-            }
-            ctx.globalAlpha = 1;
-        } else {
-            // Normal trail
-            const len = ball.trail.length;
-            for (let i = 0; i < len; i += 2) {
-                const idx = i >> 1;
-                const alpha = 1 - idx / (len / 2);
-                if (alpha <= 0) continue;
-                ctx.fillStyle = `rgba(160,200,255,${alpha * 0.3})`;
-                ctx.beginPath();
-                ctx.arc(ball.trail[i], ball.trail[i + 1], ball.radius * alpha, 0, Math.PI * 2);
+                ctx.arc(ball.x, ball.y, ball.radius * 2.5, 0, Math.PI * 2);
                 ctx.fill();
+
+                if (isBlue) {
+                    const pulse = 0.15 + Math.sin(performance.now() * 0.01) * 0.1;
+                    ctx.globalAlpha = pulse;
+                    ctx.strokeStyle = '#88ccff';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.arc(ball.x, ball.y, ball.radius * 3 + Math.sin(performance.now() * 0.008) * 4, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+                ctx.globalAlpha = 1;
+            } else {
+                for (let i = 0; i < trailLen; i += 2) {
+                    const alpha = 1 - (i >> 1) / (trailLen / 2);
+                    if (alpha <= 0) continue;
+                    ctx.fillStyle = `rgba(160,200,255,${alpha * 0.3})`;
+                    ctx.beginPath();
+                    ctx.arc(trailPts[i], trailPts[i + 1], ball.radius * alpha, 0, Math.PI * 2);
+                    ctx.fill();
+                }
             }
         }
 

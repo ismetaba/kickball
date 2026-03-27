@@ -1,0 +1,14 @@
+{
+  "name": "kickzone-server",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "msgpackr": "^1.11.9",
+    "uuid": "^9.0.0",
+    "ws": "^8.16.0"
+  }
+}

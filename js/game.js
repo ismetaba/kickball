@@ -1,3 +1,22 @@
+// Deterministic PRNG for lockstep multiplayer (xorshift32)
+class SeededRNG {
+    constructor(seed) {
+        this.s = seed || 1;
+    }
+    next() {
+        this.s ^= this.s << 13;
+        this.s ^= this.s >> 17;
+        this.s ^= this.s << 5;
+        return (this.s >>> 0) / 4294967296;
+    }
+    nextInt(max) {
+        return (this.next() * max) | 0;
+    }
+    seed(s) {
+        this.s = s || 1;
+    }
+}
+
 // Main game logic
 class Game {
     constructor() {
@@ -53,6 +72,14 @@ class Game {
         this.isSpectator = false;
         this._aiVsAiTypes = null;
         this._baseGameSpeed = Physics.GAME_SPEED;
+
+        // Lockstep deterministic multiplayer
+        this.rng = new SeededRNG(12345);
+        this.tickCount = 0;
+        this._accumulator = 0;
+        this.isLockstep = false;
+        this._lockstepInputBuffer = null;
+        this._myPlayerIdx = 0;
 
         // Online multiplayer state
         this.isOnline = false;
@@ -279,6 +306,9 @@ class Game {
         this.suddenDeathShrink = 0;
         Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
 
+        this.tickCount = 0;
+        this._accumulator = 0;
+
         this.applyMapPhysics();
         this.lastTime = performance.now();
         Sound.whistle(false);
@@ -333,72 +363,271 @@ class Game {
     loop() {
         if (!this.isRunning) return;
 
-        const now = performance.now();
-        const dt = Math.min(now - this.lastTime, 100);
-        this.lastTime = now;
+        try {
+            const now = performance.now();
+            const elapsed = Math.min(now - this.lastTime, 100);
+            this.lastTime = now;
 
-        if (!this.isPaused) {
-            this.update(dt);
-        }
-
-        if (this.isGoalScored) {
-            this.goalTimer -= dt;
-            if (this.goalTimer <= 0) {
-                this.isGoalScored = false;
-                document.getElementById('goal-notification').classList.add('hidden');
-                this.resetAfterGoal();
+            if (!this.isPaused) {
+                if (this.isLockstep) {
+                    // Lockstep P2P: send inputs then advance confirmed ticks
+                    if (this._applyPeerInputs) this._applyPeerInputs();
+                    while (this._lockstepCanAdvance()) {
+                        this._lockstepTick();
+                    }
+                } else if (this.isOnline) {
+                    this._onlineUpdate(elapsed);
+                } else {
+                    // Fixed timestep accumulator for offline play
+                    this._accumulator = (this._accumulator || 0) + elapsed;
+                    const TICK_MS = 16.67;
+                    while (this._accumulator >= TICK_MS) {
+                        this._accumulator -= TICK_MS;
+                        Physics.dtRatio = Physics.GAME_SPEED;
+                        this.update(TICK_MS);
+                        this.tickCount++;
+                    }
+                }
             }
+
+            // Goal timer (uses real time for display purposes)
+            if (!this.isOnline && this.isGoalScored) {
+                this.goalTimer -= elapsed;
+                if (this.goalTimer <= 0) {
+                    this.isGoalScored = false;
+                    document.getElementById('goal-notification').classList.add('hidden');
+                    this.resetAfterGoal();
+                }
+            }
+
+            this.renderer.updateConfetti(elapsed);
+            this.renderer.updateNetRipple(elapsed);
+            this.renderer.updateHitFlashes();
+
+            if (this.isOnline && this.ball) {
+                const speed = Math.sqrt(this.ball.vx * this.ball.vx + this.ball.vy * this.ball.vy);
+                const maxPairs = this.ball.superKick > 0 ? 20 : 10;
+                if (speed > 3) {
+                    this.ball._addTrailPoint(this.ball.x, this.ball.y, maxPairs);
+                } else if (this.ball.trailCount > 0) {
+                    this.ball.trailCount--;
+                }
+            }
+
+            this.render();
+        } catch (err) {
+            console.error('Game loop error:', err);
         }
-
-        // Always update effects (even during goal pause)
-        this.renderer.updateConfetti(dt);
-        this.renderer.updateNetRipple(dt);
-        this.renderer.updateHitFlashes();
-
-        this.render();
 
         requestAnimationFrame(() => this.loop());
     }
 
-    update(dt) {
-        // Guest: run local prediction for own player, send input to host
-        if (this.isOnline && !this.isHost) {
-            Physics.dtRatio = (dt / 16.67) * Physics.GAME_SPEED;
-            const sent = this.network ? this.network.sendInput(this.input) : false;
+    _lockstepCanAdvance() {
+        if (!this._lockstepInputBuffer) return false;
+        return this._lockstepInputBuffer.has(this.tickCount);
+    }
 
-            // Local prediction: apply own input immediately for responsiveness
-            const hp = this.humanPlayer;
-            if (hp && hp.stunTimer <= 0 && hp.powerUp !== 'frozen') {
-                hp.applyInput(this.input.x, this.input.y);
+    _lockstepTick() {
+        const inputs = this._lockstepInputBuffer.get(this.tickCount);
+        this._lockstepInputBuffer.delete(this.tickCount);
 
-                if (this.input.kickCharging) {
-                    hp.kickChargeRatio = Math.min(this.input.kickChargeTime / 1500, 1);
-                } else {
-                    hp.kickChargeRatio = 0;
+        Physics.dtRatio = Physics.GAME_SPEED;
+        const TICK_MS = 16.67;
+
+        // Apply all player inputs for this tick
+        if (inputs) {
+            for (const [playerIdx, inp] of inputs) {
+                const player = this.players[playerIdx];
+                if (!player) continue;
+
+                if (player.powerUp !== 'frozen' && player.stunTimer <= 0) {
+                    player.applyInput(inp.x, inp.y);
                 }
 
-                if (this.input.switchPlayer) this.switchToNearestTeammate();
-
-                // Move own player locally (dt-scaled)
-                const s = Physics.dtRatio;
-                hp.vx *= Math.pow(0.92, s);
-                hp.vy *= Math.pow(0.92, s);
-                hp.x += hp.vx * s;
-                hp.y += hp.vy * s;
-
-                // Keep in bounds
-                const f = this.field;
-                hp.x = Math.max(f.x + hp.radius, Math.min(f.x + f.width - hp.radius, hp.x));
-                hp.y = Math.max(f.y + hp.radius, Math.min(f.y + f.height - hp.radius, hp.y));
+                if (inp.kick && inp.chargeRatio > 0) {
+                    this.hitNearbyPlayers(player, inp.chargeRatio);
+                    if (player.kick(this.ball, inp.chargeRatio)) {
+                        this.stats.shots[player.team]++;
+                        const shakeIntensity = 0.15 + inp.chargeRatio * 0.85;
+                        this.renderer.triggerShake(shakeIntensity);
+                        this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.3 + inp.chargeRatio * 0.7);
+                        Sound.kick(inp.chargeRatio);
+                        const towardGoal = (player.team === 'red' && this.ball.vx > 0) || (player.team === 'blue' && this.ball.vx < 0);
+                        if (towardGoal) this.addMomentum(player.team);
+                    }
+                }
+                if (inp.pull) {
+                    if (!player.pullActive && player.pullCooldown <= 0 && Physics.distance(player, this.ball) < 150) {
+                        player.activatePull();
+                        Sound.pullActivate();
+                    }
+                } else if (player.pullActive) {
+                    player.pullActive = false;
+                    player.pullDuration = 0;
+                    player.pullCooldown = player.pullCooldownTime;
+                }
+                if (inp.switchPlayer && playerIdx === this._myPlayerIdx) {
+                    this.switchToNearestTeammate();
+                    Sound.switchPlayer();
+                }
             }
-
-            // Only consume one-shot inputs after they were actually sent
-            if (sent) {
-                this.input.kickRelease = false;
-                this.input.switchPlayer = false;
-            }
-            return;
         }
+
+        // Run physics update with lockstep flag active
+        this.update(TICK_MS);
+        this.tickCount++;
+
+        // Checksum every 60 ticks
+        if (this.tickCount % 60 === 0 && this.p2p) {
+            const hash = this._computeChecksum();
+            if (this.isP2PHost) {
+                this.p2p.broadcastChecksum(this.tickCount, hash);
+            }
+        }
+    }
+
+    _computeChecksum() {
+        let h = 0;
+        for (const p of this.players) {
+            h = (h * 31 + ((p.x * 10) | 0)) | 0;
+            h = (h * 31 + ((p.y * 10) | 0)) | 0;
+        }
+        h = (h * 31 + ((this.ball.x * 10) | 0)) | 0;
+        h = (h * 31 + ((this.ball.y * 10) | 0)) | 0;
+        h = (h * 31 + this.redScore) | 0;
+        h = (h * 31 + this.blueScore) | 0;
+        return h;
+    }
+
+    _onlineUpdate(dt) {
+        if (!this.network) return;
+
+        // 1. Send input to server
+        const sent = this.network.sendInput(this.input);
+        if (sent) {
+            this.input.kickRelease = false;
+            this.input.switchPlayer = false;
+        }
+
+        // 2. Interpolate all remote entities from server state buffer
+        //    This sets positions for remote players and ball via smooth interpolation.
+        //    For the local player, it stores the server target in network.serverPlayerPos.
+        this.network.interpolate(this);
+
+        // 3. Client-side prediction for local player
+        //    Apply input immediately so movement feels instant.
+        //    Then gently correct toward server position.
+        Physics.dtRatio = (dt / 16.67) * Physics.GAME_SPEED;
+        const hp = this.humanPlayer;
+        if (hp && hp.stunTimer <= 0 && hp.powerUp !== 'frozen') {
+            // Apply joystick input
+            hp.applyInput(this.input.x, this.input.y);
+
+            // Kick charge visual — use kickChargeStart (set on touchstart),
+            // not kickChargeTime (only set on release)
+            if (this.input.kickCharging) {
+                hp.kickChargeRatio = Math.min((performance.now() - this.input.kickChargeStart) / 1500, 1);
+                // Slow down while charging
+                const slowFactor = 1 - hp.kickChargeRatio * 0.015;
+                hp.vx *= Math.pow(slowFactor, Physics.dtRatio);
+                hp.vy *= Math.pow(slowFactor, Physics.dtRatio);
+            } else {
+                hp.kickChargeRatio = 0;
+            }
+
+            // Physics step
+            const s = Physics.dtRatio;
+            hp.vx *= Math.pow(Physics.FRICTION, s);
+            hp.vy *= Math.pow(Physics.FRICTION, s);
+            Physics.clampSpeed(hp, hp.getMaxSpeed());
+            hp.x += hp.vx * s;
+            hp.y += hp.vy * s;
+
+            // Constrain to field
+            if (this.field) {
+                Physics.constrainToField(hp, this.field, true);
+            }
+
+            // Server reconciliation: smoothly correct toward server position
+            // Skip reconciliation for the first second so the server catches up with our input
+            if (!this._onlineStartTime) this._onlineStartTime = performance.now();
+            const timeSinceStart = performance.now() - this._onlineStartTime;
+
+            const srv = this.network.serverPlayerPos;
+            if (srv && timeSinceStart > 1000) {
+                const errX = srv.x - hp.x;
+                const errY = srv.y - hp.y;
+                const errDist = Math.sqrt(errX * errX + errY * errY);
+
+                if (errDist > 60) {
+                    hp.x = srv.x;
+                    hp.y = srv.y;
+                    hp.vx = srv.vx;
+                    hp.vy = srv.vy;
+                } else if (errDist > 1) {
+                    // Only correct position, NOT velocity — velocity correction
+                    // fights the prediction and makes movement feel sluggish
+                    hp.x += errX * 0.1;
+                    hp.y += errY * 0.1;
+                }
+            }
+        }
+
+        // 4. Local collision resolution — prevent visual overlap
+        if (hp) {
+            // Player vs other players
+            for (const p of this.players) {
+                if (p === hp) continue;
+                const dx = p.x - hp.x;
+                const dy = p.y - hp.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const minDist = hp.radius + p.radius;
+                if (dist > 0 && dist < minDist) {
+                    const nx = dx / dist;
+                    const ny = dy / dist;
+                    const overlap = minDist - dist;
+                    // Push local player out (don't move remote — server owns them)
+                    hp.x -= nx * overlap;
+                    hp.y -= ny * overlap;
+                }
+            }
+            // Player vs ball
+            if (this.ball) {
+                const dx = this.ball.x - hp.x;
+                const dy = this.ball.y - hp.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const minDist = hp.radius + this.ball.radius;
+                if (dist > 0 && dist < minDist) {
+                    const nx = dx / dist;
+                    const ny = dy / dist;
+                    const overlap = minDist - dist;
+                    hp.x -= nx * overlap * 0.5;
+                    hp.y -= ny * overlap * 0.5;
+                }
+            }
+        }
+
+        // 5. Animate power-ups locally (visual only)
+        if (this.powerUpManager) {
+            const pups = this.powerUpManager.powerUps;
+            for (let i = 0; i < pups.length; i++) {
+                const pu = pups[i];
+                pu.bobTimer = (pu.bobTimer || 0) + dt * 0.003;
+                pu.scale = 1 + Math.sin(pu.bobTimer) * 0.15;
+                pu.rotateTimer = (pu.rotateTimer || 0) + dt * 0.002;
+                pu.pulseTimer = (pu.pulseTimer || 0) + dt * 0.004;
+            }
+        }
+    }
+
+    update(dt) {
+        // Apply peer inputs if P2P host (non-lockstep legacy mode)
+        if (this.isP2PHost && !this.isLockstep && this._applyPeerInputs) {
+            this._applyPeerInputs();
+        }
+
+        // Online mode is now handled by _onlineUpdate() called from loop()
+        // This update() is only called for offline/local matches
 
         // Recover from slow-motion
         if (this.slowMoTimer > 0) {
@@ -412,7 +641,10 @@ class Game {
         // Apply time scale for slow-motion effects
         const rawDt = dt;
         dt *= this.timeScale;
-        Physics.dtRatio = (dt / 16.67) * Physics.GAME_SPEED;
+        // In lockstep/fixed timestep mode, dtRatio is already set by the caller
+        if (!this.isLockstep) {
+            Physics.dtRatio = (dt / 16.67) * Physics.GAME_SPEED;
+        }
 
         // Timer (skip in practice mode) - use raw dt so timer isn't affected by slow-mo
         if (!this.practiceMode) {
@@ -484,8 +716,8 @@ class Game {
 
         // Momentum HUD hidden (mechanic still active under the hood)
 
-        // Human input
-        if (this.humanPlayer && this.humanPlayer.powerUp !== 'frozen' && this.humanPlayer.stunTimer <= 0) {
+        // Human input (skipped in lockstep — inputs applied by _lockstepTick)
+        if (!this.isLockstep && this.humanPlayer && this.humanPlayer.powerUp !== 'frozen' && this.humanPlayer.stunTimer <= 0) {
             this.humanPlayer.applyInput(this.input.x, this.input.y);
 
             // Track charge time for visual feedback + slow player while charging
@@ -602,7 +834,7 @@ class Game {
             const teammates = player.team === 'red' ? redTeam : blueTeam;
             const opponents = player.team === 'red' ? blueTeam : redTeam;
 
-            const action = ai.update(player, this.ball, this.field, teammates, opponents, dt);
+            const action = ai.update(player, this.ball, this.field, teammates, opponents, dt, this.rng);
 
             if (action.kick) {
                 const cr = action.chargeRatio || 0.3;
@@ -710,13 +942,13 @@ class Game {
             }
         }
 
-        // Handle pull input for human player (must be in range)
-        if (this.humanPlayer && this.input.pull && !this.humanPlayer.pullActive && this.humanPlayer.pullCooldown <= 0
+        // Handle pull input for human player (must be in range) — skipped in lockstep
+        if (!this.isLockstep && this.humanPlayer && this.input.pull && !this.humanPlayer.pullActive && this.humanPlayer.pullCooldown <= 0
             && Physics.distance(this.humanPlayer, this.ball) < pullMaxRange) {
             this.humanPlayer.activatePull();
             Sound.pullActivate();
         }
-        if (this.humanPlayer && !this.input.pull && this.humanPlayer.pullActive) {
+        if (!this.isLockstep && this.humanPlayer && !this.input.pull && this.humanPlayer.pullActive) {
             // Released pull early — end it and start cooldown
             this.humanPlayer.pullActive = false;
             this.humanPlayer.pullDuration = 0;
@@ -986,7 +1218,7 @@ class Game {
         else this.stats.possession.blue += dt;
 
         // Power-ups
-        const collected = this.powerUpManager.update(dt, this.players, this.suddenDeath);
+        const collected = this.powerUpManager.update(dt, this.players, this.suddenDeath, this.rng);
         if (collected) {
             const notif = document.getElementById('powerup-notification');
             notif.querySelector('.powerup-text').textContent = collected.type.label;
@@ -1090,6 +1322,10 @@ class Game {
         if (this.isOnline && this.isHost && this.network) {
             this.network.send({ t: 'goal', d: { team: team } });
         }
+        // P2P host: broadcast goal to peers
+        if (this.isP2PHost && this.p2p) {
+            this.p2p.broadcastGoal({ team, redScore: this.redScore, blueScore: this.blueScore });
+        }
 
         // Sudden death: first goal wins
         if (this.suddenDeath) {
@@ -1130,6 +1366,10 @@ class Game {
         // Notify guest about match end
         if (this.isOnline && this.isHost && this.network) {
             this.network.send({ t: 'end', d: { red: this.redScore, blue: this.blueScore } });
+        }
+        // P2P host: broadcast match end to peers
+        if (this.isP2PHost && this.p2p) {
+            this.p2p.broadcastMatchEnd({ red: this.redScore, blue: this.blueScore });
         }
 
         const resultOverlay = document.getElementById('result-overlay');
@@ -1537,7 +1777,7 @@ class Game {
     }
 
     pause() {
-        if (this.isOnline) return; // No pausing in online matches
+        if (this.isOnline || this.isP2PHost) return; // No pausing in online/P2P matches
         this.isPaused = true;
         Sound.pause();
         document.getElementById('pause-overlay').classList.remove('hidden');
