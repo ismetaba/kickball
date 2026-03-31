@@ -21,8 +21,13 @@ class Renderer {
 
     resize() {
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        const w = window.innerWidth;
-        const h = window.innerHeight;
+        // On iOS WKWebView, window dimensions can be 0 during startup or orientation changes.
+        // Fall back to document/screen dimensions, with a hard minimum to prevent zero-scale rendering.
+        let w = window.innerWidth || document.documentElement.clientWidth || screen.width || 320;
+        let h = window.innerHeight || document.documentElement.clientHeight || screen.height || 480;
+        // Absolute minimum to prevent zero-scale canvas
+        w = Math.max(w, 320);
+        h = Math.max(h, 240);
         this.canvas.width = w * dpr;
         this.canvas.height = h * dpr;
         this.ctx.scale(dpr, dpr);

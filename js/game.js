@@ -111,8 +111,10 @@ class Game {
 
         window.addEventListener('resize', () => this.onResize());
         window.addEventListener('orientationchange', () => {
-            // Small delay to let the browser settle the new dimensions
-            setTimeout(() => this.onResize(), 150);
+            // iOS WKWebView needs extra time to settle new dimensions after rotation
+            setTimeout(() => this.onResize(), 100);
+            setTimeout(() => this.onResize(), 300);
+            setTimeout(() => this.onResize(), 500);
         });
     }
 
@@ -143,7 +145,7 @@ class Game {
 
     _updateFieldViewScale() {
         const s = Math.min(this.renderer.w / this.VIRTUAL_W, this.renderer.h / this.VIRTUAL_H);
-        this.renderer.fieldViewScale = s;
+        this.renderer.fieldViewScale = s || 0.1; // Prevent zero scale
         this.renderer.fieldViewOffsetX = (this.renderer.w - this.VIRTUAL_W * s) / 2;
         this.renderer.fieldViewOffsetY = (this.renderer.h - this.VIRTUAL_H * s) / 2;
     }
@@ -314,6 +316,11 @@ class Game {
         Sound.whistle(false);
         Sound.startMusic();
         this.loop();
+
+        // iOS WKWebView fix: dimensions may not be available at startup.
+        // Re-resize after the view has settled to ensure correct canvas size.
+        setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 100);
+        setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 300);
     }
 
     startPractice() {
@@ -358,6 +365,10 @@ class Game {
         Sound.whistle(false);
         Sound.startMusic();
         this.loop();
+
+        // iOS WKWebView fix: dimensions may not be available at startup.
+        setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 100);
+        setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 300);
     }
 
     loop() {
@@ -370,9 +381,13 @@ class Game {
 
             if (!this.isPaused) {
                 if (this.isLockstep) {
-                    // Lockstep P2P: send inputs then advance confirmed ticks
+                    // Lockstep P2P: schedule 1 input, consume 1 tick per frame.
+                    // _applyPeerInputs schedules input for (tickCount + INPUT_DELAY).
+                    // We must consume exactly 1 tick so tickCount advances by 1,
+                    // keeping the pipeline aligned: each frame fills the next gap.
+                    // At 60fps this gives 60Hz physics (matching TICK_MS = 16.67).
                     if (this._applyPeerInputs) this._applyPeerInputs();
-                    while (this._lockstepCanAdvance()) {
+                    if (this._lockstepCanAdvance()) {
                         this._lockstepTick();
                     }
                 } else if (this.isOnline) {
@@ -414,6 +429,13 @@ class Game {
                 }
             }
 
+            // Self-healing: if canvas has bad dimensions, re-resize
+            // (iOS WKWebView can report 0 dimensions during transitions)
+            if (this.renderer.w < 100 || this.renderer.h < 100) {
+                this.renderer.resize();
+                this._updateFieldViewScale();
+            }
+
             this.render();
         } catch (err) {
             console.error('Game loop error:', err);
@@ -424,12 +446,43 @@ class Game {
 
     _lockstepCanAdvance() {
         if (!this._lockstepInputBuffer) return false;
-        return this._lockstepInputBuffer.has(this.tickCount);
+        if (this._lockstepInputBuffer.has(this.tickCount)) return true;
+
+        // Input timeout: if we've been waiting >100ms for inputs, use last known input
+        // This prevents the game from stalling on brief packet loss
+        if (!this._lockstepWaitStart) {
+            this._lockstepWaitStart = performance.now();
+            return false;
+        }
+        const waited = performance.now() - this._lockstepWaitStart;
+        if (waited > 100) {
+            // Timeout: fill missing tick with last known inputs
+            const lastTick = this.tickCount - 1;
+            const lastInputs = this._lockstepLastInputs || new Map();
+            const fallbackMap = new Map();
+            const emptyInput = { x: 0, y: 0, kick: false, chargeRatio: 0, pull: false, switchPlayer: false };
+            for (let i = 0; i < this.players.length; i++) {
+                const last = lastInputs.get(i);
+                // Copy last directional input but clear one-shot actions
+                fallbackMap.set(i, last
+                    ? { x: last.x, y: last.y, kick: false, chargeRatio: 0, pull: last.pull, switchPlayer: false }
+                    : { ...emptyInput });
+            }
+            this._lockstepInputBuffer.set(this.tickCount, fallbackMap);
+            this._lockstepWaitStart = null;
+            console.warn(`Lockstep timeout at tick ${this.tickCount}, using last known input`);
+            return true;
+        }
+        return false;
     }
 
     _lockstepTick() {
         const inputs = this._lockstepInputBuffer.get(this.tickCount);
         this._lockstepInputBuffer.delete(this.tickCount);
+
+        // Reset wait timer and save inputs for timeout fallback
+        this._lockstepWaitStart = null;
+        if (inputs) this._lockstepLastInputs = inputs;
 
         Physics.dtRatio = Physics.GAME_SPEED;
         const TICK_MS = 16.67;
@@ -477,11 +530,13 @@ class Game {
         this.update(TICK_MS);
         this.tickCount++;
 
-        // Checksum every 60 ticks
+        // Checksum every 60 ticks with full state for auto-resync
         if (this.tickCount % 60 === 0 && this.p2p) {
             const hash = this._computeChecksum();
             if (this.isP2PHost) {
-                this.p2p.broadcastChecksum(this.tickCount, hash);
+                // Include full state so guests can auto-resync on mismatch
+                const fullState = this._serializeFullState();
+                this.p2p.broadcastChecksum(this.tickCount, hash, fullState);
             }
         }
     }
@@ -497,6 +552,50 @@ class Game {
         h = (h * 31 + this.redScore) | 0;
         h = (h * 31 + this.blueScore) | 0;
         return h;
+    }
+
+    // Serialize full game state for desync recovery
+    _serializeFullState() {
+        const players = this.players.map(p => ({
+            x: Math.round(p.x * 100) / 100,
+            y: Math.round(p.y * 100) / 100,
+            vx: Math.round(p.vx * 100) / 100,
+            vy: Math.round(p.vy * 100) / 100,
+            st: p.stunTimer || 0,
+            pc: p.pullCooldown || 0,
+        }));
+        return {
+            p: players,
+            bx: Math.round(this.ball.x * 100) / 100,
+            by: Math.round(this.ball.y * 100) / 100,
+            bvx: Math.round(this.ball.vx * 100) / 100,
+            bvy: Math.round(this.ball.vy * 100) / 100,
+            rs: this.redScore,
+            bs: this.blueScore,
+            tr: this.timeRemaining,
+        };
+    }
+
+    // Apply full state from host to fix desync
+    _applyFullState(state) {
+        if (!state || !state.p) return;
+        for (let i = 0; i < this.players.length && i < state.p.length; i++) {
+            const p = this.players[i];
+            const sp = state.p[i];
+            p.x = sp.x;
+            p.y = sp.y;
+            p.vx = sp.vx;
+            p.vy = sp.vy;
+            if (sp.st !== undefined) p.stunTimer = sp.st;
+            if (sp.pc !== undefined) p.pullCooldown = sp.pc;
+        }
+        this.ball.x = state.bx;
+        this.ball.y = state.by;
+        this.ball.vx = state.bvx;
+        this.ball.vy = state.bvy;
+        this.redScore = state.rs;
+        this.blueScore = state.bs;
+        if (state.tr !== undefined) this.timeRemaining = state.tr;
     }
 
     _onlineUpdate(dt) {

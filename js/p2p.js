@@ -58,8 +58,30 @@ class P2PNetwork {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
+                // TURN fallback for peers behind strict/symmetric NATs (~10-15% of connections)
+                {
+                    urls: 'turn:a.relay.metered.ca:80',
+                    username: 'e8dd65e92f3b4a27b7108142',
+                    credential: 'kMpLJTKsS2+wrFux',
+                },
+                {
+                    urls: 'turn:a.relay.metered.ca:443',
+                    username: 'e8dd65e92f3b4a27b7108142',
+                    credential: 'kMpLJTKsS2+wrFux',
+                },
+                {
+                    urls: 'turn:a.relay.metered.ca:443?transport=tcp',
+                    username: 'e8dd65e92f3b4a27b7108142',
+                    credential: 'kMpLJTKsS2+wrFux',
+                },
             ]
         };
+
+        // Adaptive input delay: measured per-peer RTT
+        this._peerRTTs = new Map();      // peerId -> smoothed RTT in ms
+        this._pingTimestamps = new Map(); // peerId -> last ping send time
+        this._adaptiveInputDelay = 3;    // current delay in ticks (2-5 range)
+        this._rttPingInterval = null;
     }
 
     // --- WebSocket to signaling server ---
@@ -105,6 +127,7 @@ class P2PNetwork {
 
     disconnect() {
         this._intentionalClose = true;
+        this.stopRTTMeasurement();
         this._closeAllPeers();
         if (this.ws) {
             this.ws.close();
@@ -233,12 +256,14 @@ class P2PNetwork {
 
             case 'p2p_peer_input':
                 // Host: input relayed from peer via WebSocket
+                // Server sends: { peerId, input: { tk, pi, x, y, ... } }
                 if (this.isHost && msg.d) {
-                    if (msg.d.tk !== undefined && this.onLockstepInput) {
+                    const relayedInput = msg.d.input || msg.d;
+                    if (relayedInput.tk !== undefined && this.onLockstepInput) {
                         // Lockstep input via relay
-                        this.onLockstepInput(msg.d.peerId, msg.d);
+                        this.onLockstepInput(msg.d.peerId, relayedInput);
                     } else if (this.onPeerInput) {
-                        this.onPeerInput(msg.d.peerId, msg.d.input);
+                        this.onPeerInput(msg.d.peerId, relayedInput);
                     }
                 }
                 break;
@@ -364,6 +389,12 @@ class P2PNetwork {
                 } else if (msg.t === 'li' && this.onLockstepInput) {
                     // Lockstep input from peer
                     this.onLockstepInput(peerId, msg.d);
+                } else if (msg.t === 'rp') {
+                    // RTT ping from peer — reply
+                    this._handleRTTPing(peerId, msg.d, dc);
+                } else if (msg.t === 'rr') {
+                    // RTT pong from peer
+                    this._handleRTTPong(peerId, msg.d);
                 }
             } catch (err) {}
         };
@@ -392,6 +423,12 @@ class P2PNetwork {
                 } else if (msg.t === 'cs' && this.onChecksum) {
                     // Lockstep checksum from host
                     this.onChecksum(msg.d);
+                } else if (msg.t === 'rp') {
+                    // RTT ping from host — reply
+                    this._handleRTTPing('host', msg.d, this.hostChannel);
+                } else if (msg.t === 'rr') {
+                    // RTT pong from host
+                    this._handleRTTPong('host', msg.d);
                 } else {
                     this._handleHostMessage(msg);
                 }
@@ -541,14 +578,87 @@ class P2PNetwork {
         if (!sent) this._send({ t: 'p2p_relay_state', d: { tk: tick, inputs: allInputs } });
     }
 
-    // Host: broadcast checksum
-    broadcastChecksum(tick, hash) {
-        const msg = JSON.stringify({ t: 'cs', d: { tk: tick, h: hash } });
+    // Host: broadcast checksum + full state for resync
+    broadcastChecksum(tick, hash, fullState) {
+        const msg = JSON.stringify({ t: 'cs', d: { tk: tick, h: hash, fs: fullState } });
         for (const [, dc] of this.dataChannels) {
             if (dc.readyState === 'open') {
                 try { dc.send(msg); } catch(e) {}
             }
         }
+    }
+
+    // --- Adaptive Input Delay: RTT measurement between host and peers ---
+    startRTTMeasurement() {
+        if (this._rttPingInterval) clearInterval(this._rttPingInterval);
+        this._rttPingInterval = setInterval(() => {
+            const now = performance.now();
+            if (this.isHost) {
+                // Host pings all peers
+                const msg = JSON.stringify({ t: 'rp', d: { ts: now } });
+                for (const [peerId, dc] of this.dataChannels) {
+                    if (dc.readyState === 'open') {
+                        this._pingTimestamps.set(peerId, now);
+                        try { dc.send(msg); } catch(e) {}
+                    }
+                }
+            } else if (this.hostChannel && this.hostChannel.readyState === 'open') {
+                // Client pings host
+                const msg = JSON.stringify({ t: 'rp', d: { ts: now } });
+                this._pingTimestamps.set('host', now);
+                try { this.hostChannel.send(msg); } catch(e) {}
+            }
+        }, 500); // Measure every 500ms
+    }
+
+    stopRTTMeasurement() {
+        if (this._rttPingInterval) {
+            clearInterval(this._rttPingInterval);
+            this._rttPingInterval = null;
+        }
+    }
+
+    _handleRTTPing(fromId, data, replyChannel) {
+        // Respond to ping with pong
+        const msg = JSON.stringify({ t: 'rr', d: { ts: data.ts } });
+        if (replyChannel && replyChannel.readyState === 'open') {
+            try { replyChannel.send(msg); } catch(e) {}
+        }
+    }
+
+    _handleRTTPong(fromId, data) {
+        const sentTime = data.ts;
+        const rtt = performance.now() - sentTime;
+        const prev = this._peerRTTs.get(fromId) || rtt;
+        // Exponential smoothing
+        const smoothed = prev * 0.7 + rtt * 0.3;
+        this._peerRTTs.set(fromId, smoothed);
+        this._updateAdaptiveDelay();
+    }
+
+    _updateAdaptiveDelay() {
+        // Use the worst (max) RTT among all peers to determine input delay
+        let maxRTT = 0;
+        for (const [, rtt] of this._peerRTTs) {
+            if (rtt > maxRTT) maxRTT = rtt;
+        }
+        // Convert RTT to ticks: 1 tick = 16.67ms
+        // We need delay >= RTT/2 / 16.67 + 1 (safety margin)
+        // Clamp between 2 and 5 ticks
+        const halfRTTTicks = Math.ceil((maxRTT / 2) / 16.67);
+        this._adaptiveInputDelay = Math.max(2, Math.min(5, halfRTTTicks + 1));
+    }
+
+    getAdaptiveInputDelay() {
+        return this._adaptiveInputDelay;
+    }
+
+    getMaxPeerRTT() {
+        let maxRTT = 0;
+        for (const [, rtt] of this._peerRTTs) {
+            if (rtt > maxRTT) maxRTT = rtt;
+        }
+        return maxRTT;
     }
 
     // --- Client: Send input to host via data channel (or WebSocket fallback) ---

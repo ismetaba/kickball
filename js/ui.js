@@ -358,7 +358,8 @@ class UI {
     }
 
     _startP2PHostMatch(data) {
-        const INPUT_DELAY = 3;
+        // Adaptive input delay: use measured RTT or default to 3
+        const INPUT_DELAY = this.p2p ? this.p2p.getAdaptiveInputDelay() : 3;
 
         // Host runs the game using lockstep
         this.game.settings = {
@@ -371,6 +372,7 @@ class UI {
         this.game.isLockstep = true;
         this.game._lockstepInputBuffer = new Map();
         this.game._myPlayerIdx = 0; // Host is always player 0
+        this.game._inputDelay = INPUT_DELAY; // Store for runtime use
 
         // Generate and share a match seed
         const matchSeed = (Date.now() * 7 + 13) | 0;
@@ -379,6 +381,20 @@ class UI {
         // Start the game
         this.showScreen('game');
         this.game.startMatch();
+
+        // Start measuring RTT for adaptive delay adjustments mid-match
+        this.p2p.startRTTMeasurement();
+
+        // Pre-seed the first INPUT_DELAY ticks with empty inputs so lockstep can start advancing.
+        // Without this, ticks 0..INPUT_DELAY-1 never get inputs and the game freezes.
+        const emptyInput = { x: 0, y: 0, kick: false, chargeRatio: 0, pull: false, switchPlayer: false };
+        for (let t = 0; t < INPUT_DELAY; t++) {
+            const seedMap = new Map();
+            for (let i = 0; i < this.game.players.length; i++) {
+                seedMap.set(i, { ...emptyInput });
+            }
+            this.game._lockstepInputBuffer.set(t, seedMap);
+        }
 
         if (!this.controls) {
             this.controls = new Controls(this.game);
@@ -441,6 +457,7 @@ class UI {
         this._hostInputTicks = new Map(); // tick -> input
 
         // Each frame: read local input and schedule for future tick
+        // INPUT_DELAY is fixed for the duration of the match to avoid pipeline gaps.
         this.game._applyPeerInputs = () => {
             const game = this.game;
             const targetTick = game.tickCount + INPUT_DELAY;
@@ -581,7 +598,8 @@ class UI {
     }
 
     _startP2PClientMatch(data) {
-        const INPUT_DELAY = 3;
+        // Adaptive input delay: use measured RTT or default to 3
+        const INPUT_DELAY = this.p2p ? this.p2p.getAdaptiveInputDelay() : 3;
 
         // Guard against double invocation (WS + DC both fire match_starting)
         if (this.game.isRunning) return;
@@ -594,6 +612,7 @@ class UI {
         this.game.isLockstep = true;
         this.game.p2p = this.p2p;
         this.game._lockstepInputBuffer = new Map();
+        this.game._inputDelay = INPUT_DELAY;
 
         // Seed RNG with same match seed as host
         const matchSeed = data.matchSeed || 12345;
@@ -604,6 +623,20 @@ class UI {
         // Start the game identically to the host
         this.showScreen('game');
         this.game.startMatch();
+
+        // Start measuring RTT for adaptive delay
+        this.p2p.startRTTMeasurement();
+
+        // Pre-seed the first INPUT_DELAY ticks with empty inputs so lockstep can start advancing.
+        // Must match what the host does — both sides need identical initial ticks.
+        const emptyInput = { x: 0, y: 0, kick: false, chargeRatio: 0, pull: false, switchPlayer: false };
+        for (let t = 0; t < INPUT_DELAY; t++) {
+            const seedMap = new Map();
+            for (let i = 0; i < this.game.players.length; i++) {
+                seedMap.set(i, { ...emptyInput });
+            }
+            this.game._lockstepInputBuffer.set(t, seedMap);
+        }
 
         // Now remap players: find which one we control
         const mySlot = data.mySlot !== undefined ? data.mySlot : 1;
@@ -685,20 +718,27 @@ class UI {
             this.game._lockstepInputBuffer.set(tick, confirmedMap);
         };
 
-        // Client: receive checksum from host
+        // Client: receive checksum from host — auto-resync on mismatch
         this.p2p.onChecksum = (csData) => {
             const tick = csData.tk;
             const hostHash = csData.h;
+            const fullState = csData.fs;
             // If we've already passed this tick, verify
             if (this.game.tickCount >= tick) {
                 const localHash = this.game._computeChecksum();
                 if (localHash !== hostHash) {
-                    console.warn(`Lockstep desync at tick ${tick}: local=${localHash}, host=${hostHash}`);
+                    console.warn(`Lockstep desync at tick ${tick}: local=${localHash}, host=${hostHash} — resyncing`);
+                    // Auto-resync: apply host's authoritative state
+                    if (fullState) {
+                        this.game._applyFullState(fullState);
+                        console.log(`Resync applied from host at tick ${tick}`);
+                    }
                 }
             }
         };
 
         // Each frame: send local input to host for a future tick
+        // INPUT_DELAY is fixed for the duration of the match to avoid pipeline gaps.
         this.game._applyPeerInputs = () => {
             const game = this.game;
             const targetTick = game.tickCount + INPUT_DELAY;
