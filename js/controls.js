@@ -11,8 +11,27 @@ class Controls {
         this.baseX = 0;
         this.baseY = 0;
 
+        // Track attached listeners so we can detach cleanly
+        this._listeners = [];
+        this._rafId = null;
+
         this.setupTouch();
         this.setupKeyboard();
+    }
+
+    // Helper: attach and remember a listener for later removal
+    _on(target, type, handler, opts) {
+        target.addEventListener(type, handler, opts);
+        this._listeners.push({ target, type, handler, opts });
+    }
+
+    // Clean up all attached listeners — call before discarding the instance
+    destroy() {
+        for (const { target, type, handler, opts } of this._listeners) {
+            target.removeEventListener(type, handler, opts);
+        }
+        this._listeners.length = 0;
+        if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = null; }
     }
 
     setupTouch() {
@@ -20,7 +39,7 @@ class Controls {
         const kickBtn = document.getElementById('btn-kick');
 
         // Dynamic joystick — base appears where you touch
-        joystickZone.addEventListener('touchstart', (e) => {
+        this._on(joystickZone, 'touchstart', (e) => {
             e.preventDefault();
             if (this.joystickActive) return;
 
@@ -37,7 +56,7 @@ class Controls {
             this.joystickThumb.style.transform = 'translate(0px, 0px)';
         }, { passive: false });
 
-        document.addEventListener('touchmove', (e) => {
+        this._on(document, 'touchmove', (e) => {
             for (const touch of e.changedTouches) {
                 if (touch.identifier === this.joystickId) {
                     e.preventDefault();
@@ -49,27 +68,22 @@ class Controls {
         const releaseJoystick = (e) => {
             for (const touch of e.changedTouches) {
                 if (touch.identifier === this.joystickId) {
-                    this.joystickActive = false;
-                    this.joystickId = null;
-                    this.game.input.x = 0;
-                    this.game.input.y = 0;
-                    this.joystickThumb.style.transform = 'translate(0px, 0px)';
-                    this.joystickBase.classList.remove('active');
+                    this._resetJoystick();
                 }
             }
         };
-        document.addEventListener('touchend', releaseJoystick);
-        document.addEventListener('touchcancel', releaseJoystick);
+        this._on(document, 'touchend', releaseJoystick);
+        this._on(document, 'touchcancel', releaseJoystick);
 
         // Kick button (charged kick: hold to charge, release to kick)
-        kickBtn.addEventListener('touchstart', (e) => {
+        this._on(kickBtn, 'touchstart', (e) => {
             e.preventDefault();
             this.game.input.kickCharging = true;
             this.game.input.kickChargeStart = performance.now();
             kickBtn.style.transform = 'scale(0.9)';
         }, { passive: false });
 
-        kickBtn.addEventListener('touchend', (e) => {
+        const releaseKick = () => {
             if (this.game.input.kickCharging) {
                 const holdTime = performance.now() - this.game.input.kickChargeStart;
                 this.game.input.kickChargeTime = Math.min(holdTime, 1500);
@@ -77,61 +91,80 @@ class Controls {
                 this.game.input.kickRelease = true;
             }
             kickBtn.style.transform = '';
-        });
+        };
+        this._on(kickBtn, 'touchend', releaseKick);
+        // touchcancel: never skip releasing — otherwise kick stays "held" forever
+        this._on(kickBtn, 'touchcancel', releaseKick);
 
         // Switch/Swap button
         const switchBtn = document.getElementById('btn-switch');
-        switchBtn.addEventListener('touchstart', (e) => {
+        this._on(switchBtn, 'touchstart', (e) => {
             e.preventDefault();
             this.game.input.switchPlayer = true;
             switchBtn.style.transform = 'scale(0.9)';
         }, { passive: false });
-        switchBtn.addEventListener('touchend', (e) => {
-            switchBtn.style.transform = '';
-        });
+        const resetSwitchBtn = () => { switchBtn.style.transform = ''; };
+        this._on(switchBtn, 'touchend', resetSwitchBtn);
+        this._on(switchBtn, 'touchcancel', resetSwitchBtn);
 
         // Pull button (ball attract)
         const pullBtn = document.getElementById('btn-pull');
         if (pullBtn) {
-            pullBtn.addEventListener('touchstart', (e) => {
+            this._on(pullBtn, 'touchstart', (e) => {
                 e.preventDefault();
                 this.game.input.pull = true;
                 pullBtn.style.transform = 'scale(0.9)';
             }, { passive: false });
-            pullBtn.addEventListener('touchend', (e) => {
+            const releasePull = () => {
                 this.game.input.pull = false;
                 pullBtn.style.transform = '';
-            });
-            pullBtn.addEventListener('touchcancel', (e) => {
-                this.game.input.pull = false;
-                pullBtn.style.transform = '';
-            });
+            };
+            this._on(pullBtn, 'touchend', releasePull);
+            this._on(pullBtn, 'touchcancel', releasePull);
         }
 
         // Zoom controls
         const zoomInBtn = document.getElementById('btn-zoom-in');
         const zoomOutBtn = document.getElementById('btn-zoom-out');
         if (zoomInBtn) {
-            zoomInBtn.addEventListener('touchstart', (e) => {
+            this._on(zoomInBtn, 'touchstart', (e) => {
                 e.preventDefault();
                 this.game.cameraZoom = Math.min(this.game.cameraZoom * 1.25, 4.0);
                 this.game._updateFieldViewScale();
             }, { passive: false });
+            // Desktop click fallback so zoom works on non-touch devices
+            this._on(zoomInBtn, 'click', () => {
+                this.game.cameraZoom = Math.min(this.game.cameraZoom * 1.25, 4.0);
+                this.game._updateFieldViewScale();
+            });
         }
         if (zoomOutBtn) {
-            zoomOutBtn.addEventListener('touchstart', (e) => {
+            this._on(zoomOutBtn, 'touchstart', (e) => {
                 e.preventDefault();
                 this.game.cameraZoom = Math.max(this.game.cameraZoom / 1.25, 0.5);
                 this.game._updateFieldViewScale();
             }, { passive: false });
+            this._on(zoomOutBtn, 'click', () => {
+                this.game.cameraZoom = Math.max(this.game.cameraZoom / 1.25, 0.5);
+                this.game._updateFieldViewScale();
+            });
         }
 
         // Prevent scrolling/zooming
-        document.addEventListener('touchmove', (e) => {
+        this._on(document, 'touchmove', (e) => {
             if (e.target.closest('#game-screen')) {
                 e.preventDefault();
             }
         }, { passive: false });
+    }
+
+    _resetJoystick() {
+        this.joystickActive = false;
+        this.joystickId = null;
+        this.game.input.x = 0;
+        this.game.input.y = 0;
+        if (this.joystickThumb) this.joystickThumb.style.transform = 'translate(0px, 0px)';
+        if (this.joystickBase) this.joystickBase.classList.remove('active');
     }
 
     updateJoystick(touchX, touchY) {
@@ -177,19 +210,14 @@ class Controls {
             this.game.input2.kickCharging = false;
             this.game.input2.pull = false;
             // Also reset joystick in case touchcancel was missed
-            if (this.joystickActive) {
-                this.joystickActive = false;
-                this.joystickId = null;
-                this.joystickThumb.style.transform = 'translate(0px, 0px)';
-                this.joystickBase.classList.remove('active');
-            }
+            if (this.joystickActive) this._resetJoystick();
         };
-        window.addEventListener('blur', clearAllInput);
-        document.addEventListener('visibilitychange', () => {
+        this._on(window, 'blur', clearAllInput);
+        this._on(document, 'visibilitychange', () => {
             if (document.hidden) clearAllInput();
         });
 
-        document.addEventListener('keydown', (e) => {
+        this._on(document, 'keydown', (e) => {
             // Normalize letter keys to lowercase to prevent stuck keys
             // when CapsLock or Shift state changes between keydown/keyup
             const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -237,7 +265,7 @@ class Controls {
             }
         });
 
-        document.addEventListener('keyup', (e) => {
+        this._on(document, 'keyup', (e) => {
             const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
             keys[key] = false;
 
@@ -303,7 +331,7 @@ class Controls {
                 this.game.input2.y = 0;
             }
 
-            requestAnimationFrame(pollKeyboard);
+            this._rafId = requestAnimationFrame(pollKeyboard);
         };
         pollKeyboard();
     }

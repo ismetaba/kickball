@@ -448,10 +448,30 @@ body {
     color: #fff;
     box-shadow: 0 0 25px rgba(255, 77, 109, 0.5), 0 0 60px rgba(255, 77, 109, 0.2);
     border: 2px solid rgba(255, 120, 150, 0.4);
+    position: relative;
+    overflow: hidden;
 }
 .kick-btn:active {
     transform: scale(0.92);
     box-shadow: 0 0 35px rgba(255, 77, 109, 0.7), 0 0 80px rgba(255, 77, 109, 0.3);
+}
+/* Charge meter: fills the button from the bottom as KICK is held.
+   Color ramps from white to yellow to orange based on --charge (0..1). */
+.kick-btn.charging::before {
+    content: '';
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: calc(var(--charge, 0) * 100%);
+    background: linear-gradient(to top, rgba(255, 220, 80, 0.55), rgba(255, 140, 60, 0.35));
+    pointer-events: none;
+    transition: height 0.06s linear;
+    z-index: 0;
+}
+.kick-btn > * { position: relative; z-index: 1; }
+.kick-btn.charging {
+    border-color: rgba(255, 220, 80, 0.8);
+    box-shadow: 0 0 calc(25px + var(--charge, 0) * 40px) rgba(255, 180, 60, 0.6),
+                0 0 60px rgba(255, 77, 109, 0.2);
 }
 .switch-btn {
     min-width: 48px;

@@ -174,6 +174,9 @@ class P2PNetwork {
 
     // --- Signaling Message Handling ---
     _handleSignalingMessage(msg) {
+        // Drop malformed frames before they can throw in the switch arms
+        if (!msg || typeof msg.t !== 'string') return;
+        if (!msg.d) msg.d = {};
         switch (msg.t) {
             case 'room_created':
                 this.roomCode = msg.d.roomCode;

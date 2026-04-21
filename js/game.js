@@ -94,11 +94,26 @@ class Game {
             shots: { red: 0, blue: 0 },
         };
 
-        // Cached DOM elements (avoid getElementById every frame)
+        // Cached DOM elements (avoid getElementById every frame).
+        // All HUD mutations go through these refs so a missing element
+        // is a no-op instead of a crash.
         this._dom = {
             timer: document.getElementById('timer'),
             redBar: document.getElementById('momentum-fill-red'),
             blueBar: document.getElementById('momentum-fill-blue'),
+            redScore: document.getElementById('red-score'),
+            blueScore: document.getElementById('blue-score'),
+            goalNotif: document.getElementById('goal-notification'),
+            goalText: document.querySelector('#goal-notification .goal-text'),
+            goalScorer: document.querySelector('#goal-notification .goal-scorer'),
+            powerUpNotif: document.getElementById('powerup-notification'),
+            powerUpText: document.querySelector('#powerup-notification .powerup-text'),
+            pauseOverlay: document.getElementById('pause-overlay'),
+            resultOverlay: document.getElementById('result-overlay'),
+            resultTitle: document.getElementById('result-title'),
+            resultScore: document.getElementById('result-score'),
+            matchStats: document.getElementById('match-stats'),
+            pullBtn: document.getElementById('btn-pull'),
         };
 
         // Cached team arrays (rebuilt when players change, not every frame)
@@ -109,13 +124,40 @@ class Game {
         this.VIRTUAL_W = 800;
         this.VIRTUAL_H = 500;
 
+        // Pending timers (tracked so quit() can cancel them cleanly)
+        this._pendingTimers = new Set();
+        this._rafId = null;
+
+        // Debounced orientation handler — avoids queuing N setTimeouts
+        // if the user rotates rapidly.
+        this._orientationTimers = [];
         window.addEventListener('resize', () => this.onResize());
         window.addEventListener('orientationchange', () => {
+            // Cancel any pending orientation resizes from a prior rotation
+            for (const id of this._orientationTimers) clearTimeout(id);
+            this._orientationTimers.length = 0;
             // iOS WKWebView needs extra time to settle new dimensions after rotation
-            setTimeout(() => this.onResize(), 100);
-            setTimeout(() => this.onResize(), 300);
-            setTimeout(() => this.onResize(), 500);
+            this._orientationTimers.push(setTimeout(() => this.onResize(), 100));
+            this._orientationTimers.push(setTimeout(() => this.onResize(), 300));
+            this._orientationTimers.push(setTimeout(() => this.onResize(), 500));
         });
+    }
+
+    // Tracked setTimeout: auto-cancelled by quit()
+    _setTimeout(fn, ms) {
+        const id = setTimeout(() => {
+            this._pendingTimers.delete(id);
+            fn();
+        }, ms);
+        this._pendingTimers.add(id);
+        return id;
+    }
+
+    _clearAllTimers() {
+        for (const id of this._pendingTimers) clearTimeout(id);
+        this._pendingTimers.clear();
+        for (const id of this._orientationTimers) clearTimeout(id);
+        this._orientationTimers.length = 0;
     }
 
     rebuildTeamCache() {
@@ -132,7 +174,7 @@ class Game {
         } else if (mapType === 'huge') {
             this.VIRTUAL_W = 2400;
             this.VIRTUAL_H = 1600;
-            this.cameraZoom = 2.6; // zoom in — show portion of field around player
+            this.cameraZoom = 2.6;
         } else {
             // Classic
             this.VIRTUAL_W = 1500;
@@ -310,17 +352,21 @@ class Game {
 
         this.tickCount = 0;
         this._accumulator = 0;
+        this._endMatchScheduled = false;
+        this._goalNotifTimer = null;
+        this._powerUpNotifTimer = null;
 
         this.applyMapPhysics();
         this.lastTime = performance.now();
         Sound.whistle(false);
         Sound.startMusic();
+        if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = null; }
         this.loop();
 
         // iOS WKWebView fix: dimensions may not be available at startup.
         // Re-resize after the view has settled to ensure correct canvas size.
-        setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 100);
-        setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 300);
+        this._setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 100);
+        this._setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 300);
     }
 
     startPractice() {
@@ -358,21 +404,25 @@ class Game {
         this.suddenDeath = false;
         this.suddenDeathTimer = 0;
         this.suddenDeathShrink = 0;
+        this._endMatchScheduled = false;
+        this._goalNotifTimer = null;
+        this._powerUpNotifTimer = null;
         Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
 
         this.applyMapPhysics();
         this.lastTime = performance.now();
         Sound.whistle(false);
         Sound.startMusic();
+        if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = null; }
         this.loop();
 
         // iOS WKWebView fix: dimensions may not be available at startup.
-        setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 100);
-        setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 300);
+        this._setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 100);
+        this._setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 300);
     }
 
     loop() {
-        if (!this.isRunning) return;
+        if (!this.isRunning) { this._rafId = null; return; }
 
         try {
             const now = performance.now();
@@ -410,7 +460,7 @@ class Game {
                 this.goalTimer -= elapsed;
                 if (this.goalTimer <= 0) {
                     this.isGoalScored = false;
-                    document.getElementById('goal-notification').classList.add('hidden');
+                    if (this._dom.goalNotif) this._dom.goalNotif.classList.add('hidden');
                     this.resetAfterGoal();
                 }
             }
@@ -441,7 +491,7 @@ class Game {
             console.error('Game loop error:', err);
         }
 
-        requestAnimationFrame(() => this.loop());
+        this._rafId = requestAnimationFrame(() => this.loop());
     }
 
     _lockstepCanAdvance() {
@@ -487,10 +537,12 @@ class Game {
         Physics.dtRatio = Physics.GAME_SPEED;
         const TICK_MS = 16.67;
 
-        // Apply all player inputs for this tick
+        // Apply all player inputs for this tick.
+        // The "current controlled player" for a slot can change over time via SWAP,
+        // so we route inputs through _slotControlled instead of always using players[playerIdx].
         if (inputs) {
             for (const [playerIdx, inp] of inputs) {
-                const player = this.players[playerIdx];
+                const player = this._slotControlled?.get(playerIdx) || this.players[playerIdx];
                 if (!player) continue;
 
                 if (player.powerUp !== 'frozen' && player.stunTimer <= 0) {
@@ -512,16 +564,22 @@ class Game {
                 if (inp.pull) {
                     if (!player.pullActive && player.pullCooldown <= 0 && Physics.distance(player, this.ball) < 150) {
                         player.activatePull();
-                        Sound.pullActivate();
+                        if (playerIdx === this._myPlayerIdx) Sound.pullActivate();
                     }
                 } else if (player.pullActive) {
                     player.pullActive = false;
                     player.pullDuration = 0;
                     player.pullCooldown = player.pullCooldownTime;
                 }
-                if (inp.switchPlayer && playerIdx === this._myPlayerIdx) {
-                    this.switchToNearestTeammate();
-                    Sound.switchPlayer();
+                // Player swap must run on EVERY peer for every slot's swap input,
+                // not just the peer that pressed it — otherwise the simulations diverge.
+                if (inp.switchPlayer && this._slotControlled) {
+                    const newHuman = this._swapToNearestTeammate(player);
+                    this._slotControlled.set(playerIdx, newHuman);
+                    if (playerIdx === this._myPlayerIdx) {
+                        this.humanPlayer = newHuman;
+                        Sound.switchPlayer();
+                    }
                 }
             }
         }
@@ -542,13 +600,22 @@ class Game {
     }
 
     _computeChecksum() {
+        // Covers everything that can desync — position, velocity, timers,
+        // and whether a player is currently "human" for rendering purposes.
         let h = 0;
         for (const p of this.players) {
             h = (h * 31 + ((p.x * 10) | 0)) | 0;
             h = (h * 31 + ((p.y * 10) | 0)) | 0;
+            h = (h * 31 + ((p.vx * 100) | 0)) | 0;
+            h = (h * 31 + ((p.vy * 100) | 0)) | 0;
+            h = (h * 31 + ((p.stunTimer | 0))) | 0;
+            h = (h * 31 + ((p.pullCooldown | 0))) | 0;
+            h = (h * 31 + (p.isHuman ? 1 : 0)) | 0;
         }
         h = (h * 31 + ((this.ball.x * 10) | 0)) | 0;
         h = (h * 31 + ((this.ball.y * 10) | 0)) | 0;
+        h = (h * 31 + ((this.ball.vx * 100) | 0)) | 0;
+        h = (h * 31 + ((this.ball.vy * 100) | 0)) | 0;
         h = (h * 31 + this.redScore) | 0;
         h = (h * 31 + this.blueScore) | 0;
         return h;
@@ -556,6 +623,15 @@ class Game {
 
     // Serialize full game state for desync recovery
     _serializeFullState() {
+        // Include which player each slot currently controls so swap state
+        // is also restored on a resync. Slots that don't exist in the map
+        // use their default index.
+        const slotCtrl = [];
+        if (this._slotControlled) {
+            for (const [slotIdx, player] of this._slotControlled) {
+                slotCtrl.push([slotIdx, this.players.indexOf(player)]);
+            }
+        }
         const players = this.players.map(p => ({
             x: Math.round(p.x * 100) / 100,
             y: Math.round(p.y * 100) / 100,
@@ -563,6 +639,7 @@ class Game {
             vy: Math.round(p.vy * 100) / 100,
             st: p.stunTimer || 0,
             pc: p.pullCooldown || 0,
+            ih: p.isHuman ? 1 : 0,
         }));
         return {
             p: players,
@@ -573,6 +650,7 @@ class Game {
             rs: this.redScore,
             bs: this.blueScore,
             tr: this.timeRemaining,
+            sc: slotCtrl,
         };
     }
 
@@ -588,6 +666,7 @@ class Game {
             p.vy = sp.vy;
             if (sp.st !== undefined) p.stunTimer = sp.st;
             if (sp.pc !== undefined) p.pullCooldown = sp.pc;
+            if (sp.ih !== undefined) p.isHuman = sp.ih === 1;
         }
         this.ball.x = state.bx;
         this.ball.y = state.by;
@@ -596,6 +675,29 @@ class Game {
         this.redScore = state.rs;
         this.blueScore = state.bs;
         if (state.tr !== undefined) this.timeRemaining = state.tr;
+
+        // Restore the slot→controlled-player map
+        if (state.sc && this._slotControlled) {
+            this._slotControlled.clear();
+            for (const [slotIdx, playerIdx] of state.sc) {
+                if (playerIdx >= 0 && playerIdx < this.players.length) {
+                    this._slotControlled.set(slotIdx, this.players[playerIdx]);
+                }
+            }
+            // Rebuild aiControllers so AI runs only on non-human players
+            const controlledSet = new Set(this._slotControlled.values());
+            this.aiControllers = this.aiControllers.filter(ac => ac && !controlledSet.has(ac.player));
+            for (const p of this.players) {
+                if (!p.isHuman && !this.aiControllers.some(ac => ac.player === p)) {
+                    this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'normal') });
+                }
+            }
+            // Update local humanPlayer pointer
+            if (this._myPlayerIdx !== undefined) {
+                const mine = this._slotControlled.get(this._myPlayerIdx);
+                if (mine) this.humanPlayer = mine;
+            }
+        }
     }
 
     _onlineUpdate(dt) {
@@ -720,13 +822,8 @@ class Game {
     }
 
     update(dt) {
-        // Apply peer inputs if P2P host (non-lockstep legacy mode)
-        if (this.isP2PHost && !this.isLockstep && this._applyPeerInputs) {
-            this._applyPeerInputs();
-        }
-
-        // Online mode is now handled by _onlineUpdate() called from loop()
-        // This update() is only called for offline/local matches
+        // Online mode is handled by _onlineUpdate() called from loop().
+        // This update() is called for offline/local/lockstep (inside _lockstepTick) matches.
 
         // Recover from slow-motion
         if (this.slowMoTimer > 0) {
@@ -1319,10 +1416,16 @@ class Game {
         // Power-ups
         const collected = this.powerUpManager.update(dt, this.players, this.suddenDeath, this.rng);
         if (collected) {
-            const notif = document.getElementById('powerup-notification');
-            notif.querySelector('.powerup-text').textContent = collected.type.label;
-            notif.classList.remove('hidden');
-            setTimeout(() => notif.classList.add('hidden'), 2000);
+            const notif = this._dom.powerUpNotif;
+            if (notif) {
+                if (this._dom.powerUpText) this._dom.powerUpText.textContent = collected.type.label;
+                notif.classList.remove('hidden');
+                if (this._powerUpNotifTimer) clearTimeout(this._powerUpNotifTimer);
+                this._powerUpNotifTimer = this._setTimeout(() => {
+                    notif.classList.add('hidden');
+                    this._powerUpNotifTimer = null;
+                }, 2000);
+            }
             if (collected.type.id === 'freeze' || collected.type.id === 'slow') Sound.freeze();
             else Sound.powerUpCollect();
         }
@@ -1348,10 +1451,10 @@ class Game {
 
         if (team === 'red') {
             this.redScore += goalPoints;
-            document.getElementById('red-score').textContent = this.redScore;
+            if (this._dom.redScore) this._dom.redScore.textContent = this.redScore;
         } else {
             this.blueScore += goalPoints;
-            document.getElementById('blue-score').textContent = this.blueScore;
+            if (this._dom.blueScore) this._dom.blueScore.textContent = this.blueScore;
         }
 
         // Track who scored — only credit if they scored for their own team (not own goal)
@@ -1378,14 +1481,16 @@ class Game {
         }
 
         // Show notification
-        const notif = document.getElementById('goal-notification');
+        const notif = this._dom.goalNotif;
         let goalText = isOwnGoal ? 'OWN GOAL!' : 'GOAL!';
         if (fireLevel >= 2) goalText = 'INFERNO GOAL!!!';
         else if (fireLevel >= 1) goalText = 'FIRE GOAL!';
-        notif.querySelector('.goal-text').textContent = goalText;
-        notif.querySelector('.goal-scorer').textContent =
-            scorer ? `${scorer.team.toUpperCase()} Team${goalPoints > 1 ? ' (+' + goalPoints + ')' : ''}` : '';
-        notif.classList.remove('hidden');
+        if (this._dom.goalText) this._dom.goalText.textContent = goalText;
+        if (this._dom.goalScorer) {
+            this._dom.goalScorer.textContent =
+                scorer ? `${scorer.team.toUpperCase()} Team${goalPoints > 1 ? ' (+' + goalPoints + ')' : ''}` : '';
+        }
+        if (notif) notif.classList.remove('hidden');
 
         this.isGoalScored = true;
         this.goalTimer = 2500;
@@ -1421,23 +1526,37 @@ class Game {
         if (this.isOnline && this.isHost && this.network) {
             this.network.send({ t: 'goal', d: { team: team } });
         }
-        // P2P host: broadcast goal to peers
+        // P2P host: broadcast goal to peers with full context so their overlay matches
         if (this.isP2PHost && this.p2p) {
-            this.p2p.broadcastGoal({ team, redScore: this.redScore, blueScore: this.blueScore });
+            this.p2p.broadcastGoal({
+                team,
+                redScore: this.redScore,
+                blueScore: this.blueScore,
+                fireLevel,
+                points: goalPoints,
+                isOwnGoal,
+            });
         }
 
         // Sudden death: first goal wins
         if (this.suddenDeath) {
-            setTimeout(() => this.endMatch(), 2100);
+            this._scheduleEndMatch(2100);
             return;
         }
 
         // Check goal limit
         if (this.settings.goalLimit > 0) {
             if (this.redScore >= this.settings.goalLimit || this.blueScore >= this.settings.goalLimit) {
-                setTimeout(() => this.endMatch(), 2100);
+                this._scheduleEndMatch(2100);
             }
         }
+    }
+
+    _scheduleEndMatch(ms) {
+        // Guard against double scheduling (e.g. goal-limit hit on a sudden-death goal)
+        if (this._endMatchScheduled) return;
+        this._endMatchScheduled = true;
+        this._setTimeout(() => this.endMatch(), ms);
     }
 
     resetAfterGoal() {
@@ -1471,61 +1590,94 @@ class Game {
             this.p2p.broadcastMatchEnd({ red: this.redScore, blue: this.blueScore });
         }
 
-        const resultOverlay = document.getElementById('result-overlay');
-        const title = document.getElementById('result-title');
-        const score = document.getElementById('result-score');
-        const stats = document.getElementById('match-stats');
+        const resultOverlay = this._dom.resultOverlay;
+        const title = this._dom.resultTitle;
+        const score = this._dom.resultScore;
+        const stats = this._dom.matchStats;
 
         // Determine local team
         const localTeam = (this.isOnline && !this.isHost) ? 'blue' : 'red';
         const localScore = localTeam === 'red' ? this.redScore : this.blueScore;
         const remoteScore = localTeam === 'red' ? this.blueScore : this.redScore;
 
-        if (this.isSpectator) {
-            if (this.redScore > this.blueScore) {
-                title.textContent = 'RED WINS!';
+        if (title) {
+            if (this.isSpectator) {
+                if (this.redScore > this.blueScore) {
+                    title.textContent = 'RED WINS!';
+                    title.style.color = '#e94560';
+                } else if (this.blueScore > this.redScore) {
+                    title.textContent = 'BLUE WINS!';
+                    title.style.color = '#53d8fb';
+                } else {
+                    title.textContent = 'DRAW';
+                    title.style.color = '#aaa';
+                }
+                Physics.GAME_SPEED = this._baseGameSpeed;
+            } else if (localScore > remoteScore) {
+                title.textContent = 'YOU WIN!';
+                title.style.color = '#4caf50';
+                this._setTimeout(() => Sound.win(), 400);
+            } else if (remoteScore > localScore) {
+                title.textContent = 'YOU LOSE';
                 title.style.color = '#e94560';
-            } else if (this.blueScore > this.redScore) {
-                title.textContent = 'BLUE WINS!';
-                title.style.color = '#53d8fb';
+                this._setTimeout(() => Sound.lose(), 400);
             } else {
                 title.textContent = 'DRAW';
-                title.style.color = '#aaa';
+                title.style.color = '#53d8fb';
             }
-            Physics.GAME_SPEED = this._baseGameSpeed;
-        } else if (localScore > remoteScore) {
-            title.textContent = 'YOU WIN!';
-            title.style.color = '#4caf50';
-            setTimeout(() => Sound.win(), 400);
-        } else if (remoteScore > localScore) {
-            title.textContent = 'YOU LOSE';
-            title.style.color = '#e94560';
-            setTimeout(() => Sound.lose(), 400);
-        } else {
-            title.textContent = 'DRAW';
-            title.style.color = '#53d8fb';
         }
 
-        score.innerHTML = `<span style="color:#e94560">${this.redScore}</span> - <span style="color:#53d8fb">${this.blueScore}</span>`;
+        if (score) this._renderScoreDuo(score, this.redScore, this.blueScore);
 
         const totalPoss = this.stats.possession.red + this.stats.possession.blue;
         const redPoss = totalPoss > 0 ? Math.round((this.stats.possession.red / totalPoss) * 100) : 50;
 
-        if (this.isSpectator) {
-            stats.innerHTML = `
-                Possession: <span style="color:#e94560">${redPoss}%</span> - <span style="color:#53d8fb">${100 - redPoss}%</span><br>
-                Shots: <span style="color:#e94560">${this.stats.shots.red}</span> - <span style="color:#53d8fb">${this.stats.shots.blue}</span>
-            `;
-        } else {
-            stats.innerHTML = `
-                Possession: <span style="color:#e94560">${redPoss}%</span> - <span style="color:#53d8fb">${100 - redPoss}%</span><br>
-                Shots: <span style="color:#e94560">${this.stats.shots.red}</span> - <span style="color:#53d8fb">${this.stats.shots.blue}</span><br>
-                Your Goals: ${this.humanPlayer ? this.humanPlayer.goals : 0}<br>
-                Your Kicks: ${this.humanPlayer ? this.humanPlayer.kicks : 0}
-            `;
-        }
+        if (stats) this._renderMatchStats(stats, redPoss, this.isSpectator);
 
-        resultOverlay.classList.remove('hidden');
+        if (resultOverlay) resultOverlay.classList.remove('hidden');
+    }
+
+    // Build red-blue "X - Y" score markup safely (no innerHTML with interpolation)
+    _renderScoreDuo(el, red, blue) {
+        el.textContent = '';
+        const redSpan = document.createElement('span');
+        redSpan.style.color = '#e94560';
+        redSpan.textContent = String(red);
+        const blueSpan = document.createElement('span');
+        blueSpan.style.color = '#53d8fb';
+        blueSpan.textContent = String(blue);
+        el.appendChild(redSpan);
+        el.appendChild(document.createTextNode(' - '));
+        el.appendChild(blueSpan);
+    }
+
+    // Build match stats DOM without innerHTML
+    _renderMatchStats(el, redPoss, isSpectator) {
+        el.textContent = '';
+        const addRow = (label, redVal, blueVal) => {
+            const row = document.createElement('div');
+            row.appendChild(document.createTextNode(label + ': '));
+            const r = document.createElement('span');
+            r.style.color = '#e94560';
+            r.textContent = String(redVal);
+            row.appendChild(r);
+            row.appendChild(document.createTextNode(' - '));
+            const b = document.createElement('span');
+            b.style.color = '#53d8fb';
+            b.textContent = String(blueVal);
+            row.appendChild(b);
+            el.appendChild(row);
+        };
+        addRow('Possession', redPoss + '%', (100 - redPoss) + '%');
+        addRow('Shots', this.stats.shots.red, this.stats.shots.blue);
+        if (!isSpectator) {
+            const goals = document.createElement('div');
+            goals.textContent = `Your Goals: ${this.humanPlayer ? this.humanPlayer.goals : 0}`;
+            el.appendChild(goals);
+            const kicks = document.createElement('div');
+            kicks.textContent = `Your Kicks: ${this.humanPlayer ? this.humanPlayer.kicks : 0}`;
+            el.appendChild(kicks);
+        }
     }
 
     hitNearbyPlayers(kicker, chargeRatio) {
@@ -1551,79 +1703,42 @@ class Game {
         this.momentum[team] = Math.min(this.momentum.max, this.momentum[team] + amount);
     }
 
-    switchToNearestTeammate() {
-        if (!this.humanPlayer) return;
-        const teammates = this.players.filter(p =>
-            p.team === this.humanPlayer.team && p !== this.humanPlayer
-        );
-        if (teammates.length === 0) return;
-
+    // Swap control from `current` to the teammate closest to the ball.
+    // Returns the new human player (or `current` if no swap happened).
+    // Idempotent: never creates duplicate AI controllers for the same player.
+    _swapToNearestTeammate(current) {
+        if (!current) return current;
         let nearest = null;
         let nearestDist = Infinity;
-        for (const t of teammates) {
-            const d = Physics.distance(t, this.ball);
-            if (d < nearestDist) {
-                nearestDist = d;
-                nearest = t;
-            }
+        for (const p of this.players) {
+            if (p.team !== current.team || p === current) continue;
+            const d = Physics.distance(p, this.ball);
+            if (d < nearestDist) { nearestDist = d; nearest = p; }
         }
+        if (!nearest) return current;
 
-        if (nearest) {
-            // Old human becomes AI
-            this.humanPlayer.isHuman = false;
-            this.aiControllers.push({ player: this.humanPlayer, ai: new AIController(this.settings.difficulty) });
-
-            // New human
-            nearest.isHuman = true;
-            this.aiControllers = this.aiControllers.filter(c => c.player !== nearest);
-            this.humanPlayer = nearest;
+        current.isHuman = false;
+        if (!this.aiControllers.some(c => c.player === current)) {
+            this.aiControllers.push({
+                player: current,
+                ai: new AIController(this.settings.difficulty || 'normal'),
+            });
         }
+        nearest.isHuman = true;
+        this.aiControllers = this.aiControllers.filter(c => c.player !== nearest);
+        return nearest;
+    }
+
+    switchToNearestTeammate() {
+        this.humanPlayer = this._swapToNearestTeammate(this.humanPlayer);
     }
 
     switchToNearestTeammate_remote() {
-        if (!this.remoteHumanPlayer) return;
-        const teammates = this.players.filter(p =>
-            p.team === this.remoteHumanPlayer.team && p !== this.remoteHumanPlayer
-        );
-        if (teammates.length === 0) return;
-
-        let nearest = null;
-        let nearestDist = Infinity;
-        for (const t of teammates) {
-            const d = Physics.distance(t, this.ball);
-            if (d < nearestDist) { nearestDist = d; nearest = t; }
-        }
-
-        if (nearest) {
-            this.remoteHumanPlayer.isHuman = false;
-            this.aiControllers.push({ player: this.remoteHumanPlayer, ai: new AIController(this.settings.difficulty || 'normal') });
-            nearest.isHuman = true;
-            this.aiControllers = this.aiControllers.filter(c => c.player !== nearest);
-            this.remoteHumanPlayer = nearest;
-        }
+        this.remoteHumanPlayer = this._swapToNearestTeammate(this.remoteHumanPlayer);
     }
 
     switchToNearestTeammate_p2() {
-        if (!this.humanPlayer2) return;
-        const teammates = this.players.filter(p =>
-            p.team === this.humanPlayer2.team && p !== this.humanPlayer2
-        );
-        if (teammates.length === 0) return;
-
-        let nearest = null;
-        let nearestDist = Infinity;
-        for (const t of teammates) {
-            const d = Physics.distance(t, this.ball);
-            if (d < nearestDist) { nearestDist = d; nearest = t; }
-        }
-
-        if (nearest) {
-            this.humanPlayer2.isHuman = false;
-            this.aiControllers.push({ player: this.humanPlayer2, ai: new AIController(this.settings.difficulty || 'normal') });
-            nearest.isHuman = true;
-            this.aiControllers = this.aiControllers.filter(c => c.player !== nearest);
-            this.humanPlayer2 = nearest;
-        }
+        this.humanPlayer2 = this._swapToNearestTeammate(this.humanPlayer2);
     }
 
     render() {
@@ -1716,8 +1831,11 @@ class Game {
             this.renderer.drawSuddenDeathHUD();
         }
 
+        // Kick charge meter (visual feedback while holding KICK)
+        this._updateKickChargeMeter();
+
         // Update pull button visual state
-        const pullBtn = document.getElementById('btn-pull');
+        const pullBtn = this._dom.pullBtn;
         if (pullBtn && this.humanPlayer) {
             const hp = this.humanPlayer;
             if (hp.pullActive) {
@@ -1755,6 +1873,27 @@ class Game {
 
         // End frame (restore screen shake transform)
         this.renderer.endFrame();
+    }
+
+    _updateKickChargeMeter() {
+        if (!this._dom) return;
+        if (!this._dom.kickBtn) this._dom.kickBtn = document.getElementById('btn-kick');
+        const btn = this._dom.kickBtn;
+        if (!btn) return;
+        const hp = this.humanPlayer;
+        const charging = !!(this.input.kickCharging && hp && hp.powerUp !== 'frozen' && hp.stunTimer <= 0);
+        let ratio = 0;
+        if (charging) {
+            ratio = Math.min((performance.now() - (this.input.kickChargeStart || performance.now())) / 1500, 1);
+        }
+        if (charging) {
+            btn.classList.add('charging');
+            btn.style.setProperty('--charge', ratio.toFixed(3));
+        } else if (this._lastChargeRatio !== 0) {
+            btn.classList.remove('charging');
+            btn.style.setProperty('--charge', '0');
+        }
+        this._lastChargeRatio = charging ? ratio : 0;
     }
 
     _worldToScreen(wx, wy) {
@@ -1876,32 +2015,55 @@ class Game {
     }
 
     pause() {
-        if (this.isOnline || this.isP2PHost) return; // No pausing in online/P2P matches
+        if (this.isOnline || this.isP2PHost || this.isLockstep) return; // No pausing in online/P2P matches
         this.isPaused = true;
         Sound.pause();
-        document.getElementById('pause-overlay').classList.remove('hidden');
+        if (this._dom.pauseOverlay) this._dom.pauseOverlay.classList.remove('hidden');
     }
 
     resume() {
         this.isPaused = false;
         this.lastTime = performance.now();
         Sound.resume();
-        document.getElementById('pause-overlay').classList.add('hidden');
+        if (this._dom.pauseOverlay) this._dom.pauseOverlay.classList.add('hidden');
     }
 
     restart() {
-        document.getElementById('pause-overlay').classList.add('hidden');
-        document.getElementById('result-overlay').classList.add('hidden');
-        document.getElementById('goal-notification').classList.add('hidden');
+        if (this._dom.pauseOverlay) this._dom.pauseOverlay.classList.add('hidden');
+        if (this._dom.resultOverlay) this._dom.resultOverlay.classList.add('hidden');
+        if (this._dom.goalNotif) this._dom.goalNotif.classList.add('hidden');
+        if (this._dom.powerUpNotif) this._dom.powerUpNotif.classList.add('hidden');
         this.startMatch();
     }
 
     quit() {
         this.isRunning = false;
+        this.isPaused = false;
+        this.matchOver = true;
+        if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = null; }
+        this._clearAllTimers();
+        this._goalNotifTimer = null;
+        this._powerUpNotifTimer = null;
+        this._endMatchScheduled = false;
+
+        // Reset per-match input state so a stale "kick held" / "movement" doesn't
+        // leak into the next match.
+        this.input.x = 0; this.input.y = 0;
+        this.input.kick = false;
+        this.input.kickCharging = false; this.input.kickRelease = false;
+        this.input.kickChargeTime = 0;
+        this.input.switchPlayer = false; this.input.pull = false;
+        this.input2.x = 0; this.input2.y = 0;
+        this.input2.kickCharging = false; this.input2.kickRelease = false;
+        this.input2.kickChargeTime = 0;
+        this.input2.switchPlayer = false; this.input2.pull = false;
+
         this.resetMapPhysics();
         Sound.stopMusic();
-        document.getElementById('pause-overlay').classList.add('hidden');
-        document.getElementById('result-overlay').classList.add('hidden');
-        document.getElementById('goal-notification').classList.add('hidden');
+        if (this._dom.pauseOverlay) this._dom.pauseOverlay.classList.add('hidden');
+        if (this._dom.resultOverlay) this._dom.resultOverlay.classList.add('hidden');
+        if (this._dom.goalNotif) this._dom.goalNotif.classList.add('hidden');
+        if (this._dom.powerUpNotif) this._dom.powerUpNotif.classList.add('hidden');
+        if (this._dom.timer) this._dom.timer.style.color = '';
     }
 }

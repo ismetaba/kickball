@@ -4,7 +4,7 @@
     {
       "name": "kickzone",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["http-server", "www", "-p", "3001", "-c-1"],
+      "runtimeArgs": ["http-server", ".", "-p", "3001", "-c-1"],
       "port": 3001
     }
   ]

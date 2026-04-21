@@ -20,7 +20,13 @@ class Renderer {
     }
 
     resize() {
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        // Use the device's real pixel ratio (capped at 3) and add a modest
+        // supersampling factor so thin vector strokes — which end up at
+        // ~0.3-0.7 CSS px after the world→screen downscale — don't turn into
+        // a blurry anti-aliased mush.
+        const rawDpr = Math.min(window.devicePixelRatio || 1, 3);
+        const supersample = 1.5;
+        const dpr = rawDpr * supersample;
         // On iOS WKWebView, window dimensions can be 0 during startup or orientation changes.
         // Fall back to document/screen dimensions, with a hard minimum to prevent zero-scale rendering.
         let w = window.innerWidth || document.documentElement.clientWidth || screen.width || 320;
@@ -28,11 +34,14 @@ class Renderer {
         // Absolute minimum to prevent zero-scale canvas
         w = Math.max(w, 320);
         h = Math.max(h, 240);
-        this.canvas.width = w * dpr;
-        this.canvas.height = h * dpr;
-        this.ctx.scale(dpr, dpr);
+        this.canvas.width = Math.round(w * dpr);
+        this.canvas.height = Math.round(h * dpr);
+        this.canvas.style.width = w + 'px';
+        this.canvas.style.height = h + 'px';
+        this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         this.w = w;
         this.h = h;
+        this.dpr = dpr;
         this._bgGrad = null; // invalidate cache
     }
 

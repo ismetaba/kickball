@@ -3,14 +3,14 @@ class UI {
     constructor(game) {
         this.game = game;
         this.currentScreen = 'menu';
-        this.network = new NetworkManager();
         this.p2p = new P2PNetwork();
         this.playerName = 'Player' + Math.floor(Math.random() * 999);
+        this._connecting = false; // blocks double-connects for host/join
 
         this.setupMenuEvents();
         this.setupSettingsEvents();
         this.setupGameEvents();
-        this.setupOnlineEvents();
+        this._setupRoomEvents();
         this.setupP2PEvents();
 
         // Initialize audio on first user interaction (required by mobile browsers)
@@ -32,8 +32,38 @@ class UI {
 
     showScreen(name) {
         document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-        document.getElementById(`${name}-screen`).classList.add('active');
+        const target = document.getElementById(`${name}-screen`);
+        if (target) target.classList.add('active');
         this.currentScreen = name;
+    }
+
+    // Unified "wait for p2p to connect, then do thing" flow.
+    // Shows status via `statusFn`, gives up after ~5s.
+    _whenP2PConnected(statusFn, onReady, onTimeout) {
+        if (this.p2p.isOnline) { onReady(); return; }
+        if (this._connecting) {
+            // Already trying — just poll for readiness without re-connecting
+        } else {
+            this._connecting = true;
+            try { this.p2p.connect(); } catch (e) { /* connect() is defensive */ }
+        }
+        let attempts = 0;
+        const MAX_ATTEMPTS = 25; // 5 seconds at 200ms
+        const poll = () => {
+            if (this.p2p.isOnline) {
+                this._connecting = false;
+                onReady();
+                return;
+            }
+            if (++attempts >= MAX_ATTEMPTS) {
+                this._connecting = false;
+                if (onTimeout) onTimeout();
+                return;
+            }
+            if (statusFn) statusFn(attempts, MAX_ATTEMPTS);
+            setTimeout(poll, 200);
+        };
+        poll();
     }
 
     setupMenuEvents() {
@@ -43,59 +73,78 @@ class UI {
 
         document.getElementById('btn-host-game').addEventListener('click', () => {
             const btn = document.getElementById('btn-host-game');
-            btn.textContent = 'Connecting...';
+            if (btn.disabled) return;
+            const originalText = 'Create Room';
+            btn.textContent = 'Connecting…';
             btn.disabled = true;
-
-            if (!this.p2p.isOnline) {
-                this.p2p.connect();
-            }
-            let attempts = 0;
-            const tryCreate = () => {
-                if (this.p2p.isOnline) {
-                    btn.textContent = 'Create Room';
+            this._whenP2PConnected(
+                null,
+                () => {
+                    btn.textContent = originalText;
                     btn.disabled = false;
                     this.p2p.createRoom(this.playerName, this.game.settings);
-                } else if (++attempts < 25) {
-                    setTimeout(tryCreate, 200);
-                } else {
-                    btn.textContent = 'Create Room';
+                },
+                () => {
+                    btn.textContent = originalText;
                     btn.disabled = false;
-                    alert('Could not connect to server. Check your internet connection.');
+                    this._showToast('Could not reach server. Check your internet connection.');
                 }
-            };
-            tryCreate();
+            );
         });
 
         document.getElementById('btn-join-game').addEventListener('click', () => {
             this.showScreen('join');
+            const statusEl = document.getElementById('join-status');
+            if (statusEl) statusEl.textContent = '';
         });
 
         document.getElementById('btn-back-join').addEventListener('click', () => {
             this.showScreen('menu');
         });
 
+        // Auto-uppercase and allow pressing Enter to join
+        const joinInput = document.getElementById('join-code-input');
+        if (joinInput) {
+            joinInput.addEventListener('input', () => {
+                joinInput.value = joinInput.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 4);
+            });
+            joinInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') document.getElementById('btn-join-code').click();
+            });
+        }
+
         document.getElementById('btn-join-code').addEventListener('click', () => {
-            const code = document.getElementById('join-code-input').value.trim().toUpperCase();
-            if (code.length !== 4) return;
-
+            const btn = document.getElementById('btn-join-code');
+            if (btn.disabled) return;
+            const code = (joinInput?.value || '').trim().toUpperCase();
             const statusEl = document.getElementById('join-status');
-            statusEl.textContent = 'Connecting...';
-
-            if (!this.p2p.isOnline) {
-                this.p2p.connect();
+            if (code.length !== 4) {
+                if (statusEl) statusEl.textContent = 'Enter a 4-character room code.';
+                return;
             }
-            let attempts = 0;
-            const tryJoin = () => {
-                if (this.p2p.isOnline) {
-                    statusEl.textContent = 'Joining...';
+
+            btn.disabled = true;
+            btn.textContent = '…';
+            if (statusEl) statusEl.textContent = 'Connecting…';
+
+            this._whenP2PConnected(
+                null,
+                () => {
+                    if (statusEl) statusEl.textContent = 'Joining room ' + code + '…';
                     this.p2p.joinRoom(code, this.playerName);
-                } else if (++attempts < 25) {
-                    setTimeout(tryJoin, 200);
-                } else {
-                    statusEl.textContent = 'Could not connect to server.';
+                    // Button stays disabled — onRoomJoined / onError will re-enable by navigating
+                    // Safety: re-enable after 8s in case no reply arrives
+                    setTimeout(() => {
+                        btn.disabled = false;
+                        btn.textContent = 'JOIN';
+                    }, 8000);
+                },
+                () => {
+                    btn.disabled = false;
+                    btn.textContent = 'JOIN';
+                    if (statusEl) statusEl.textContent = 'Could not reach server.';
                 }
-            };
-            tryJoin();
+            );
         });
 
         document.getElementById('btn-practice').addEventListener('click', () => {
@@ -188,51 +237,71 @@ class UI {
         });
 
         document.getElementById('btn-quit').addEventListener('click', () => {
-            // Clean up P2P broadcast interval (legacy)
-            if (this.game._p2pBroadcastInterval) {
-                clearInterval(this.game._p2pBroadcastInterval);
-                this.game._p2pBroadcastInterval = null;
-            }
-            // Clean up lockstep state
-            this.game.isLockstep = false;
-            this.game._lockstepInputBuffer = null;
-            this.game._applyPeerInputs = null;
-            this.game.quit();
-            if (this.game.isOnline || this.network.roomCode) {
-                this.network.leaveRoom();
-                this.network.disconnect();
-                this.game.isOnline = false;
-            }
-            if (this.game.isP2PHost || this._isP2PRoom) {
-                this.p2p.leaveRoom();
-                this.p2p.disconnect();
-                this.game.isP2PHost = false;
-                this._isP2PRoom = false;
-            }
-            // Reset overlay text for next time
-            document.getElementById('btn-resume').textContent = 'Resume';
-            document.getElementById('btn-restart').classList.remove('hidden');
-            document.getElementById('btn-quit').textContent = 'Quit to Menu';
-            document.getElementById('pause-overlay').classList.add('hidden');
+            this._teardownMatch();
             this.showScreen('menu');
         });
 
         document.getElementById('btn-rematch').addEventListener('click', () => {
+            // P2P / online matches can't be restarted locally — leave match instead
+            if (this.game.isP2PHost || this._isP2PRoom || this.game.isLockstep || this.game.isOnline) {
+                this._teardownMatch();
+                this.showScreen('menu');
+                return;
+            }
+            document.getElementById('result-overlay').classList.add('hidden');
             this.game.restart();
         });
 
         document.getElementById('btn-result-menu').addEventListener('click', () => {
-            this.game.quit();
-            if (this.network.roomCode) this.network.leaveRoom();
-            document.getElementById('result-overlay').classList.add('hidden');
+            this._teardownMatch();
             this.showScreen('menu');
         });
     }
 
-    // --- Online Events ---
+    // Full match teardown — safe to call from quit, result, or disconnect.
+    // Handles local, lockstep, and online cleanup in one place so each path
+    // doesn't drift.
+    _teardownMatch() {
+        // Controls own their own event listeners — destroy them so they
+        // don't accumulate across matches.
+        if (this.controls) {
+            this.controls.destroy();
+            this.controls = null;
+        }
 
-    setupOnlineEvents() {
-        // Room screen buttons (P2P only)
+        // Clean up P2P broadcast interval (legacy)
+        if (this.game._p2pBroadcastInterval) {
+            clearInterval(this.game._p2pBroadcastInterval);
+            this.game._p2pBroadcastInterval = null;
+        }
+        // Clean up lockstep state
+        this.game.isLockstep = false;
+        this.game._lockstepInputBuffer = null;
+        this.game._applyPeerInputs = null;
+        this.game.isOnline = false;
+
+        this.game.quit();
+
+        if (this.game.isP2PHost || this._isP2PRoom) {
+            try { this.p2p.leaveRoom(); } catch (e) {}
+            try { this.p2p.disconnect(); } catch (e) {}
+            this.game.isP2PHost = false;
+            this._isP2PRoom = false;
+        }
+
+        // Reset pause overlay text for next time
+        const resumeBtn = document.getElementById('btn-resume');
+        const restartBtn = document.getElementById('btn-restart');
+        const quitBtn = document.getElementById('btn-quit');
+        if (resumeBtn) resumeBtn.textContent = 'Resume';
+        if (restartBtn) restartBtn.classList.remove('hidden');
+        if (quitBtn) quitBtn.textContent = 'Quit to Menu';
+        document.getElementById('pause-overlay').classList.add('hidden');
+        document.getElementById('result-overlay').classList.add('hidden');
+    }
+
+    // --- Room lobby events (P2P only) ---
+    _setupRoomEvents() {
         document.getElementById('btn-switch-team').addEventListener('click', () => {
             const currentTeam = this._myTeam || 'red';
             this.p2p.switchTeam(currentTeam === 'red' ? 'blue' : 'red');
@@ -256,12 +325,24 @@ class UI {
                 this.p2p.updateRoomSettings({ teamSize: size });
             });
         });
+    }
 
-        // Network callbacks
-        this.network.onConnected = () => {
-            document.getElementById('online-status').textContent = 'Connected to server';
-        };
-
+    // Lightweight toast — small non-blocking notice.
+    _showToast(message, ms = 3200) {
+        let toast = document.getElementById('ui-toast');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'ui-toast';
+            toast.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);' +
+                'background:rgba(20,25,55,0.95);border:1px solid rgba(77,212,255,0.35);' +
+                'color:#fff;padding:10px 18px;border-radius:10px;z-index:200;font-size:14px;' +
+                'backdrop-filter:blur(6px);box-shadow:0 4px 16px rgba(0,0,0,0.45);transition:opacity 0.25s;';
+            document.body.appendChild(toast);
+        }
+        toast.textContent = message;
+        toast.style.opacity = '1';
+        clearTimeout(this._toastTimer);
+        this._toastTimer = setTimeout(() => { toast.style.opacity = '0'; }, ms);
     }
 
     setupP2PEvents() {
@@ -288,7 +369,30 @@ class UI {
 
         this.p2p.onError = (msg) => {
             const joinStatus = document.getElementById('join-status');
-            if (joinStatus) joinStatus.textContent = msg;
+            if (joinStatus && this.currentScreen === 'join') {
+                joinStatus.textContent = msg || 'Connection error';
+                // Re-enable the JOIN button
+                const btn = document.getElementById('btn-join-code');
+                if (btn) { btn.disabled = false; btn.textContent = 'JOIN'; }
+                return;
+            }
+            // If a match is running and the host disconnected, teardown
+            if (this.game.isRunning || this._isP2PRoom) {
+                this._showToast(msg || 'Disconnected from room');
+                this._teardownMatch();
+                this.showScreen('menu');
+            } else {
+                this._showToast(msg || 'Connection error');
+            }
+        };
+
+        this.p2p.onDisconnected = () => {
+            // Signaling channel dropped. If we're mid-match it's often fine (WebRTC
+            // is peer-to-peer by then), but if we're still in a room lobby it's worth
+            // surfacing.
+            if (this.currentScreen === 'room' && !this.game.isRunning) {
+                this._showToast('Lost connection. Reconnecting…');
+            }
         };
 
         // Host: when match starts, run physics locally and broadcast to peers
@@ -306,20 +410,39 @@ class UI {
             if (this.p2p.isHost) return; // Host already handles goals locally
             this.game.redScore = data.redScore || 0;
             this.game.blueScore = data.blueScore || 0;
-            document.getElementById('red-score').textContent = this.game.redScore;
-            document.getElementById('blue-score').textContent = this.game.blueScore;
+            const dom = this.game._dom;
+            if (dom.redScore) dom.redScore.textContent = this.game.redScore;
+            if (dom.blueScore) dom.blueScore.textContent = this.game.blueScore;
 
-            // Show goal notification
-            const notif = document.getElementById('goal-notification');
-            notif.querySelector('.goal-text').textContent = 'GOAL!';
-            notif.querySelector('.goal-scorer').textContent = `${(data.team || '').toUpperCase()} Team`;
-            notif.classList.remove('hidden');
-            setTimeout(() => notif.classList.add('hidden'), 2500);
+            // Show goal notification matching the host's richer markup
+            const notif = dom.goalNotif;
+            if (notif) {
+                const fireLevel = data.fireLevel || 0;
+                let goalText = 'GOAL!';
+                if (fireLevel >= 2) goalText = 'INFERNO GOAL!!!';
+                else if (fireLevel >= 1) goalText = 'FIRE GOAL!';
+                if (dom.goalText) dom.goalText.textContent = goalText;
+                if (dom.goalScorer) {
+                    const team = (data.team || '').toUpperCase();
+                    const pts = data.points && data.points > 1 ? ' (+' + data.points + ')' : '';
+                    dom.goalScorer.textContent = team ? `${team} Team${pts}` : '';
+                }
+                notif.classList.remove('hidden');
+                if (this._clientGoalTimer) clearTimeout(this._clientGoalTimer);
+                this._clientGoalTimer = setTimeout(() => {
+                    notif.classList.add('hidden');
+                    this._clientGoalTimer = null;
+                }, 2500);
+            }
 
-            Sound.goalHorn();
+            if ((data.fireLevel || 0) >= 1 && typeof Sound.fireGoal === 'function') {
+                Sound.fireGoal(data.fireLevel);
+            } else {
+                Sound.goal();
+            }
         };
 
-        // Client: handle match end from host
+        // Client: handle match end from host — mirror the host's richer overlay
         this.p2p.onMatchEnd = (data) => {
             if (this.p2p.isHost) return;
             this.game.isRunning = false;
@@ -329,15 +452,33 @@ class UI {
             Sound.stopMusic();
             Sound.whistle(true);
 
-            // Show result
-            const resultOverlay = document.getElementById('result-overlay');
-            const title = document.getElementById('result-title');
-            const score = document.getElementById('result-score');
-            const myTeam = this._myTeam || 'red';
-            const won = (myTeam === 'red' && data.red > data.blue) || (myTeam === 'blue' && data.blue > data.red);
-            title.textContent = data.red === data.blue ? 'DRAW' : won ? 'YOU WIN!' : 'YOU LOSE!';
-            score.textContent = `${data.red} - ${data.blue}`;
-            resultOverlay.classList.remove('hidden');
+            const dom = this.game._dom;
+            const myTeam = this._myTeam || 'blue';
+            const localScore = myTeam === 'red' ? this.game.redScore : this.game.blueScore;
+            const remoteScore = myTeam === 'red' ? this.game.blueScore : this.game.redScore;
+
+            if (dom.resultTitle) {
+                if (localScore > remoteScore) {
+                    dom.resultTitle.textContent = 'YOU WIN!';
+                    dom.resultTitle.style.color = '#4caf50';
+                    setTimeout(() => Sound.win(), 400);
+                } else if (remoteScore > localScore) {
+                    dom.resultTitle.textContent = 'YOU LOSE';
+                    dom.resultTitle.style.color = '#e94560';
+                    setTimeout(() => Sound.lose(), 400);
+                } else {
+                    dom.resultTitle.textContent = 'DRAW';
+                    dom.resultTitle.style.color = '#53d8fb';
+                }
+            }
+
+            if (dom.resultScore) this.game._renderScoreDuo(dom.resultScore, this.game.redScore, this.game.blueScore);
+            if (dom.matchStats) {
+                const totalPoss = this.game.stats.possession.red + this.game.stats.possession.blue;
+                const redPoss = totalPoss > 0 ? Math.round((this.game.stats.possession.red / totalPoss) * 100) : 50;
+                this.game._renderMatchStats(dom.matchStats, redPoss, false);
+            }
+            if (dom.resultOverlay) dom.resultOverlay.classList.remove('hidden');
         };
 
         // Host: receive input from peers
@@ -396,9 +537,7 @@ class UI {
             this.game._lockstepInputBuffer.set(t, seedMap);
         }
 
-        if (!this.controls) {
-            this.controls = new Controls(this.game);
-        }
+        this._ensureControls();
 
         // Map peers to player indices
         this._peerPlayerMap = new Map(); // peerId -> playerIdx
@@ -435,6 +574,13 @@ class UI {
             }
         }
 
+        // Build slot→controlled-player map so lockstep swap stays deterministic.
+        // Every peer maintains this map identically.
+        this.game._slotControlled = new Map();
+        for (let i = 0; i < this.game.players.length; i++) {
+            this.game._slotControlled.set(i, this.game.players[i]);
+        }
+
         // Send match seed with match_starting so clients can seed their RNG
         this.p2p.broadcastMatchStarting({ ...data, matchSeed });
 
@@ -443,6 +589,8 @@ class UI {
 
         // Host: receive lockstep inputs from peers
         this.p2p.onLockstepInput = (peerId, inputData) => {
+            // Ignore inputs from peers who've already disconnected
+            if (!this._peerIds.has(peerId)) return;
             const tick = inputData.tk;
             if (!this._pendingPeerInputs.has(tick)) {
                 this._pendingPeerInputs.set(tick, new Map());
@@ -451,6 +599,22 @@ class UI {
 
             // Check if we can confirm this tick
             this._tryConfirmTick(tick);
+        };
+
+        // Host: when a peer disconnects mid-match, drop them from the
+        // expected-input set so the lockstep keeps confirming ticks instead
+        // of stalling. The slot's player stays in place but receives no input
+        // for the rest of the match — both host and remaining clients see
+        // the same thing, so the simulations stay in sync.
+        this.p2p.onPeerDisconnected = ({ peerId }) => {
+            if (!peerId || !this._peerIds || !this._peerIds.has(peerId)) return;
+            this._peerIds.delete(peerId);
+            this._peerPlayerMap.delete(peerId);
+            for (const [tick, peerMap] of this._pendingPeerInputs) {
+                peerMap.delete(peerId);
+                this._tryConfirmTick(tick);
+            }
+            this._showToast('A player disconnected');
         };
 
         // Track which ticks the host has submitted its own input for
@@ -694,9 +858,13 @@ class UI {
 
         this.game._myPlayerIdx = myPlayerIdx;
 
-        if (!this.controls) {
-            this.controls = new Controls(this.game);
+        // Mirror the host's slot→controlled-player map so lockstep swap is deterministic.
+        this.game._slotControlled = new Map();
+        for (let i = 0; i < this.game.players.length; i++) {
+            this.game._slotControlled.set(i, this.game.players[i]);
         }
+
+        this._ensureControls();
 
         // Client: receive confirmed inputs from host and add to lockstep buffer
         this.p2p.onConfirmedInputs = (cData) => {
@@ -828,10 +996,7 @@ class UI {
         document.getElementById('timer').textContent = 'PRACTICE';
 
         this.game.startPractice();
-
-        if (!this.controls) {
-            this.controls = new Controls(this.game);
-        }
+        this._ensureControls();
     }
 
     startGame() {
@@ -847,9 +1012,11 @@ class UI {
         document.getElementById('timer').textContent = `${m}:${s.toString().padStart(2, '0')}`;
 
         this.game.startMatch();
+        this._ensureControls();
+    }
 
-        if (!this.controls) {
-            this.controls = new Controls(this.game);
-        }
+    _ensureControls() {
+        // Fresh Controls per match — destroy() zeroes any stale instance on quit.
+        if (!this.controls) this.controls = new Controls(this.game);
     }
 }
