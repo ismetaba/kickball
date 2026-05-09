@@ -165,6 +165,39 @@ class Game {
         this._blueTeam = this.players.filter(p => p.team === 'blue');
     }
 
+    // Build the right AI for the current difficulty.
+    // - 1v1 expert: use the 1v1 PPO agent if available
+    // - 2v2 expert: use the 2v2 PPO agent (each AI player gets its own
+    //   runtime instance backed by the SAME shared policy)
+    _makeAI() {
+        const diff = this.settings.difficulty;
+        const ts = this.settings.teamSize;
+        if (diff === 'expert' && ts === 1
+            && typeof RLOrchestrator !== 'undefined'
+            && window.rlOrch && window.rlOrch.hasTrainedAgent()
+            && typeof RLRuntimeAgent !== 'undefined') {
+            const ag = window.rlOrch.getRuntimeAgent();
+            if (ag) return ag;
+        }
+        if (diff === 'expert' && ts === 2
+            && typeof RLOrchestrator2v2 !== 'undefined'
+            && window.rlOrch2v2 && window.rlOrch2v2.hasTrainedAgent()
+            && typeof RLRuntimeAgent2v2 !== 'undefined') {
+            // Lazy-create the shared 2v2 runtime pool: each call hands out a
+            // fresh per-player agent that references the same policy weights.
+            if (!this._rl2v2Pool || this._rl2v2PoolToken !== window.rlOrch2v2.generation) {
+                this._rl2v2Pool = window.rlOrch2v2.getRuntimeAgents() || [];
+                this._rl2v2PoolToken = window.rlOrch2v2.generation;
+                this._rl2v2PoolIdx = 0;
+            }
+            const ag = this._rl2v2Pool[this._rl2v2PoolIdx % this._rl2v2Pool.length];
+            this._rl2v2PoolIdx++;
+            if (ag) return ag;
+        }
+        const fallbackDiff = (diff === 'expert') ? 'normal' : diff;
+        return new AIController(fallbackDiff || 'normal');
+    }
+
     _setVirtualSize(mapType) {
         const isMobile = window.innerWidth < 768 || window.innerHeight < 768;
         if (mapType === 'big') {
@@ -310,9 +343,7 @@ class Game {
             if (isHuman) {
                 this.humanPlayer = p;
             } else {
-                const redAi = this.settings.difficulty === 'expert' && typeof Trainer !== 'undefined' && Trainer.hasTrainedAgent()
-                    ? Trainer.getBestAgent()
-                    : new AIController(this.settings.difficulty === 'expert' ? 'normal' : this.settings.difficulty);
+                const redAi = this._makeAI();
                 this.aiControllers.push({ player: p, ai: redAi });
             }
         }
@@ -321,9 +352,7 @@ class Game {
         for (let i = 0; i < this.settings.teamSize; i++) {
             const p = new Player(positions.blue[i].x, positions.blue[i].y, 'blue', false);
             this.players.push(p);
-            const ai = this.settings.difficulty === 'expert' && typeof Trainer !== 'undefined' && Trainer.hasTrainedAgent()
-                ? Trainer.getBestAgent()
-                : new AIController(this.settings.difficulty === 'expert' ? 'normal' : this.settings.difficulty);
+            const ai = this._makeAI();
             this.aiControllers.push({ player: p, ai });
         }
 

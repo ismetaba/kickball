@@ -151,6 +151,12 @@ class UI {
             this.startPractice();
         });
 
+        const aiLabBtn = document.getElementById('btn-ai-lab');
+        if (aiLabBtn) aiLabBtn.addEventListener('click', () => {
+            this.showScreen('ai-lab');
+            this._initAILab();
+        });
+
         document.getElementById('btn-settings').addEventListener('click', () => {
             this.showScreen('match-settings');
         });
@@ -1018,5 +1024,226 @@ class UI {
     _ensureControls() {
         // Fresh Controls per match — destroy() zeroes any stale instance on quit.
         if (!this.controls) this.controls = new Controls(this.game);
+    }
+
+    // -------------------- AI Lab --------------------
+    _initAILab() {
+        if (this._aiLabInitialized) {
+            this._refreshAILab();
+            return;
+        }
+        this._aiLabInitialized = true;
+
+        if (typeof RLOrchestrator === 'undefined') {
+            const status = document.getElementById('ai-lab-status');
+            if (status) {
+                status.textContent = 'RL scripts missing';
+                status.style.color = '#ff4d6d';
+            }
+            return;
+        }
+
+        // Track which mode (1v1 or 2v2) the lab is currently displaying.
+        // Each mode has its own orchestrator; buttons route to the current one.
+        this._aiLabMode = '1v1';
+
+        // Mode tab switcher
+        document.querySelectorAll('[data-mode]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('[data-mode]').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                this._aiLabMode = btn.dataset.mode;
+                // Lazy-create the right orchestrator for this mode
+                this._ensureCurrentOrch();
+                // Update mode description + phase button highlight + stats
+                const desc = document.getElementById('ai-lab-mode-desc');
+                if (desc) {
+                    desc.textContent = this._aiLabMode === '1v1'
+                        ? 'Train a 1v1 neural-network AI with PPO + League self-play. Your machine handles all training locally.'
+                        : 'Train a 2v2 model with passing, teammate coordination, and role assignment. ~3× the training time of 1v1 but learns team strategy.';
+                }
+                this._highlightCurrentPhase();
+                this._refreshAILab();
+            });
+        });
+
+        // Lazy-create both orchestrators (the inactive one waits in the background)
+        this._ensureCurrentOrch();
+
+        // Phase selector
+        document.querySelectorAll('[data-phase]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('[data-phase]').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                const p = parseInt(btn.dataset.phase);
+                const orch = this._currentOrch();
+                if (orch) orch.opts.phase = p;
+                const desc = {
+                    1: 'Sade tekme + hareket. Super-kick, body-check, pull devre dışı. Temel becerileri öğren.',
+                    2: 'Phase 1 + body-check + pull aktif. Süper tekme hâlâ kapalı. Body-check abuse cezası.',
+                    3: 'Tam oyun: super-kick + body-check + pull aktif. Abuse cezalı.',
+                };
+                const dEl = document.getElementById('phase-desc');
+                if (dEl) dEl.textContent = desc[p];
+            });
+        });
+
+        document.getElementById('btn-ai-lab-start').addEventListener('click', () => {
+            const orch = this._currentOrch();
+            if (!orch) return;
+            orch.start();
+            this._setAILabStatus(this._aiLabMode + ' Training Phase ' + (orch.opts.phase || 1), '#4dd4ff');
+        });
+        document.getElementById('btn-ai-lab-bc').addEventListener('click', async () => {
+            const btn = document.getElementById('btn-ai-lab-bc');
+            const orig = btn.textContent;
+            btn.disabled = true;
+            const orch = this._currentOrch();
+            if (!orch) { btn.disabled = false; return; }
+            try {
+                orch.stop();
+                this._setAILabStatus(this._aiLabMode + ' BC pretrain — round 1/4…', '#4dd4ff');
+                orch.onProgress = (info) => {
+                    if (info.event === 'bc') {
+                        this._setAILabStatus(`${this._aiLabMode} BC — round ${info.round}/${info.rounds}, loss ${info.loss.toFixed(4)}`, '#4dd4ff');
+                    } else {
+                        this._refreshAILab(info);
+                    }
+                };
+                await orch.pretrainFromRules({ totalSamples: 24000, rounds: 4, epochsPerRound: 4 });
+                this._setAILabStatus(this._aiLabMode + ' BC done — ready for PPO', '#4dd4ff');
+            } catch (e) {
+                this._setAILabStatus('BC failed: ' + e.message, '#ff4d6d');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = orig;
+            }
+        });
+        document.getElementById('btn-ai-lab-stop').addEventListener('click', () => {
+            const orch = this._currentOrch();
+            if (!orch) return;
+            orch.stop();
+            this._setAILabStatus(this._aiLabMode + ' Stopped', '#fc6');
+        });
+        document.getElementById('btn-ai-lab-save').addEventListener('click', () => {
+            const orch = this._currentOrch();
+            if (!orch) return;
+            orch.saveAs('kickzone-rl-' + this._aiLabMode + '-gen' + orch.generation + '.json');
+        });
+        document.getElementById('ai-lab-load-input').addEventListener('change', async (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (!file) return;
+            const orch = this._currentOrch();
+            if (!orch) return;
+            try {
+                await orch.loadFromFile(file);
+                this._setAILabStatus(this._aiLabMode + ' Loaded', '#4dd4ff');
+            } catch (err) {
+                this._setAILabStatus('Load failed: ' + err.message, '#ff4d6d');
+            }
+            e.target.value = '';
+        });
+        document.getElementById('btn-ai-lab-test').addEventListener('click', () => {
+            // Test match in the current mode's team size
+            this.game.settings.teamSize = (this._aiLabMode === '2v2') ? 2 : 1;
+            this.game.settings.difficulty = 'expert';
+            this.game.settings.powerups = false;
+            this.game.settings.map = 'classic';
+            this.startGame();
+        });
+        document.getElementById('btn-ai-lab-reset').addEventListener('click', () => {
+            if (!confirm('Reset all ' + this._aiLabMode + ' training progress? This cannot be undone.')) return;
+            const orch = this._currentOrch();
+            if (orch) orch.reset();
+            this._setAILabStatus(this._aiLabMode + ' Reset', '#fc6');
+            this._refreshAILab();
+        });
+        document.getElementById('btn-ai-lab-back').addEventListener('click', () => {
+            this.showScreen('menu');
+        });
+
+        this._highlightCurrentPhase();
+        this._refreshAILab();
+    }
+
+    _currentOrch() {
+        return this._aiLabMode === '2v2' ? window.rlOrch2v2 : window.rlOrch;
+    }
+
+    _ensureCurrentOrch() {
+        if (this._aiLabMode === '2v2') {
+            if (typeof RLOrchestrator2v2 === 'undefined') return;
+            if (!window.rlOrch2v2) window.rlOrch2v2 = new RLOrchestrator2v2();
+            window.rlOrch2v2.onProgress = (info) => this._refreshAILab(info);
+        } else {
+            if (!window.rlOrch) window.rlOrch = new RLOrchestrator();
+            window.rlOrch.onProgress = (info) => this._refreshAILab(info);
+        }
+    }
+
+    _highlightCurrentPhase() {
+        const orch = this._currentOrch();
+        if (!orch) return;
+        const p = orch.opts.phase || 1;
+        document.querySelectorAll('[data-phase]').forEach(b => {
+            b.classList.toggle('active', parseInt(b.dataset.phase) === p);
+        });
+    }
+
+    _refreshAILab(info) {
+        const orch = this._currentOrch();
+        if (!orch) return;
+        const $ = (id) => document.getElementById(id);
+        if ($('ai-lab-gen')) $('ai-lab-gen').textContent = orch.generation;
+        if ($('ai-lab-steps')) $('ai-lab-steps').textContent = orch.totalSteps.toLocaleString();
+        if ($('ai-lab-league')) $('ai-lab-league').textContent = orch.league.size();
+        const s = orch.lastStats;
+        if (s) {
+            if ($('ai-lab-ploss')) $('ai-lab-ploss').textContent = s.policyLoss.toFixed(4);
+            if ($('ai-lab-vloss')) $('ai-lab-vloss').textContent = s.valueLoss.toFixed(4);
+            if ($('ai-lab-entropy')) $('ai-lab-entropy').textContent = s.entropy.toFixed(3);
+        }
+        const ev = orch._lastEvalScore;
+        if (ev && $('ai-lab-eval')) {
+            $('ai-lab-eval').textContent = `${ev.agentGoals}–${ev.oppGoals}` + (ev.diff > 0 ? ' (winning)' : ev.diff < 0 ? ' (losing)' : '');
+        }
+        if ($('ai-lab-status')) {
+            if (orch.isTraining) {
+                $('ai-lab-status').textContent = 'Training (gen ' + orch.generation + ')';
+                $('ai-lab-status').style.color = '#4dd4ff';
+            }
+        }
+        // Tiny eval chart: x=generation, y=goal diff
+        const chart = $('ai-lab-chart');
+        if (chart && orch._evalHistory && orch._evalHistory.length) {
+            const ctx = chart.getContext('2d');
+            const w = chart.width, h = chart.height;
+            ctx.clearRect(0, 0, w, h);
+            const data = orch._evalHistory;
+            let minY = -1, maxY = 1;
+            for (const p of data) { if (p.diff < minY) minY = p.diff; if (p.diff > maxY) maxY = p.diff; }
+            const span = Math.max(1, maxY - minY);
+            // Zero line
+            const zeroY = h - (0 - minY) / span * h;
+            ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+            ctx.beginPath(); ctx.moveTo(0, zeroY); ctx.lineTo(w, zeroY); ctx.stroke();
+            // Path
+            ctx.strokeStyle = '#4dd4ff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            for (let i = 0; i < data.length; i++) {
+                const x = (i / Math.max(1, data.length - 1)) * w;
+                const y = h - (data[i].diff - minY) / span * h;
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
+    }
+
+    _setAILabStatus(text, color) {
+        const el = document.getElementById('ai-lab-status');
+        if (!el) return;
+        el.textContent = text;
+        el.style.color = color || '#fff';
     }
 }

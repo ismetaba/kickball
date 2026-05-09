@@ -15,7 +15,7 @@
     <meta name="twitter:card" content="summary">
     <meta name="twitter:title" content="KickZone - Physics-Based Mobile Soccer Game">
     <meta name="twitter:description" content="Fast-paced physics-based soccer. Play against AI, friends locally, or online.">
-    <link rel="stylesheet" href="css/style.css?v=22">
+    <link rel="stylesheet" href="css/style.css?v=24">
 </head>
 <body>
     <!-- Main Menu -->
@@ -28,6 +28,7 @@
                 <button id="btn-host-game" class="menu-btn primary">Create Room</button>
                 <button id="btn-join-game" class="menu-btn primary">Join Game</button>
                 <button id="btn-practice" class="menu-btn">Practice Mode</button>
+                <button id="btn-ai-lab" class="menu-btn">AI Lab</button>
                 <button id="btn-settings" class="menu-btn">Settings</button>
                 <button id="btn-how-to-play" class="menu-btn">How to Play</button>
             </div>
@@ -126,6 +127,57 @@
                 </div>
             </div>
             <button id="btn-back-help" class="menu-btn secondary">Back</button>
+        </div>
+    </div>
+
+    <!-- AI Lab (training screen) -->
+    <div id="ai-lab-screen" class="screen">
+        <div class="settings-container" style="padding:16px 20px">
+            <h2 style="margin-bottom:8px;font-size:22px">AI Lab — KickZone RL</h2>
+            <div class="option-row" style="margin-top:0;margin-bottom:6px">
+                <button class="option-btn active" data-mode="1v1">1v1</button>
+                <button class="option-btn" data-mode="2v2">2v2</button>
+            </div>
+            <p id="ai-lab-mode-desc" style="color:#99a;font-size:11px;text-align:center;max-width:420px;margin:0 auto 8px;line-height:1.3">
+                Train a 1v1 AI with PPO + League self-play. All training runs locally.
+            </p>
+
+            <div id="ai-lab-stats" style="display:grid;grid-template-columns:repeat(2,1fr);gap:3px 14px;width:100%;max-width:420px;color:#cce;font-size:12px;background:rgba(77,212,255,0.05);border:1px solid rgba(77,212,255,0.2);padding:8px 12px;border-radius:8px">
+                <div>Generation</div><div id="ai-lab-gen" style="text-align:right;color:#fff">0</div>
+                <div>Total transitions</div><div id="ai-lab-steps" style="text-align:right;color:#fff">0</div>
+                <div>Policy loss</div><div id="ai-lab-ploss" style="text-align:right;color:#fff">—</div>
+                <div>Value loss</div><div id="ai-lab-vloss" style="text-align:right;color:#fff">—</div>
+                <div>Entropy</div><div id="ai-lab-entropy" style="text-align:right;color:#fff">—</div>
+                <div>League size</div><div id="ai-lab-league" style="text-align:right;color:#fff">0</div>
+                <div>Last eval</div><div id="ai-lab-eval" style="text-align:right;color:#fff">—</div>
+                <div>Status</div><div id="ai-lab-status" style="text-align:right;color:#fff">Idle</div>
+            </div>
+            <canvas id="ai-lab-chart" width="420" height="50" style="margin-top:6px;background:rgba(77,212,255,0.05);border:1px solid rgba(77,212,255,0.2);border-radius:8px;width:100%;max-width:420px"></canvas>
+
+            <div class="setting-group" style="margin-top:8px;margin-bottom:6px;width:100%;max-width:420px">
+                <label style="color:#cce;font-size:11px">Training Phase</label>
+                <div class="option-row">
+                    <button class="option-btn active" data-phase="1">Phase 1</button>
+                    <button class="option-btn" data-phase="2">Phase 2</button>
+                    <button class="option-btn" data-phase="3">Phase 3</button>
+                </div>
+                <div style="color:#88a;font-size:10px;margin-top:2px;line-height:1.3" id="phase-desc">Sade tekme + hareket. Temel becerileri öğren.</div>
+            </div>
+            <div class="btn-row" style="margin-top:4px">
+                <button id="btn-ai-lab-bc" class="menu-btn primary">Pretrain (BC)</button>
+                <button id="btn-ai-lab-start" class="menu-btn primary">Start Training</button>
+                <button id="btn-ai-lab-stop" class="menu-btn secondary">Stop</button>
+            </div>
+            <div class="btn-row">
+                <button id="btn-ai-lab-save" class="menu-btn">Download</button>
+                <label class="menu-btn" style="display:inline-flex;align-items:center;justify-content:center;cursor:pointer;margin:0">
+                    Load
+                    <input type="file" id="ai-lab-load-input" accept="application/json" style="display:none">
+                </label>
+                <button id="btn-ai-lab-test" class="menu-btn">Test Match</button>
+                <button id="btn-ai-lab-reset" class="menu-btn secondary">Reset</button>
+            </div>
+            <button id="btn-ai-lab-back" class="menu-btn secondary" style="margin-top:4px">Back</button>
         </div>
     </div>
 
@@ -254,11 +306,21 @@
     <script src="shared/entities.js?v=1"></script>
     <script src="shared/ai.js?v=1"></script>
     <script src="shared/powerups.js?v=1"></script>
+    <script src="js/rl/nn.js?v=10"></script>
+    <script src="js/rl/encoder.js?v=10"></script>
+    <script src="js/rl/encoder2v2.js?v=1"></script>
+    <script src="js/rl/policy.js?v=10"></script>
+    <script src="js/rl/league.js?v=10"></script>
+    <script src="js/rl/trainer.js?v=12"></script>
+    <script src="js/rl/runtime.js?v=10"></script>
+    <script src="js/rl/runtime2v2.js?v=1"></script>
+    <script src="js/rl/orchestrator.js?v=17"></script>
+    <script src="js/rl/orchestrator2v2.js?v=1"></script>
     <script src="js/renderer.js?v=22"></script>
-    <script src="js/game.js?v=32"></script>
+    <script src="js/game.js?v=34"></script>
     <script src="js/p2p.js?v=2"></script>
     <script src="js/controls.js?v=24"></script>
-    <script src="js/ui.js?v=23"></script>
-    <script src="js/main.js?v=21"></script>
+    <script src="js/ui.js?v=26"></script>
+    <script src="js/main.js?v=23"></script>
 </body>
 </html>

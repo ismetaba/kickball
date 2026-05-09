@@ -100,6 +100,66 @@ body {
     background: rgba(30, 30, 60, 0.3);
 }
 
+/* ---- LANDSCAPE / SHORT VIEWPORTS ----
+   Phone landscape (height ~390-500px) doesn't have room for our default
+   menu layout (title + 7 vertical buttons + gaps = ~600px). Compress the
+   title and switch the menu buttons to a 2-column grid so everything fits. */
+@media (max-height: 520px) {
+    .menu-container {
+        justify-content: flex-start;
+        padding: 12px 20px;
+        overflow-y: auto;
+    }
+    .game-title {
+        font-size: 32px;
+        letter-spacing: 2px;
+    }
+    .subtitle {
+        font-size: 11px;
+        letter-spacing: 3px;
+    }
+    .menu-buttons {
+        margin-top: 14px;
+        max-width: 540px;
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 8px;
+    }
+    .menu-btn {
+        padding: 10px 16px;
+        font-size: 13px;
+        letter-spacing: 1px;
+    }
+    .settings-container {
+        padding: 10px 16px;
+    }
+    .settings-container h2 {
+        font-size: 18px;
+        margin-bottom: 8px;
+    }
+    .setting-group {
+        margin-bottom: 8px;
+    }
+    /* AI Lab in landscape will be vertically taller than the viewport — the
+       container has overflow-y:auto so users can swipe. Compress font and
+       padding so most controls are visible without scroll. */
+    #ai-lab-screen .settings-container {
+        padding: 6px 14px;
+    }
+    #ai-lab-screen .settings-container h2 {
+        font-size: 16px;
+        margin-bottom: 4px;
+    }
+    #ai-lab-screen #ai-lab-stats {
+        font-size: 10px;
+        padding: 6px 10px;
+        gap: 1px 12px;
+    }
+    #ai-lab-screen #ai-lab-chart {
+        height: 35px !important;
+    }
+}
+
 /* ---- SETTINGS ---- */
 .settings-container {
     display: flex;
