@@ -15,6 +15,21 @@
 		504EC30F1FED79650016851F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30E1FED79650016851F /* Assets.xcassets */; };
 		504EC3121FED79650016851F /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC3101FED79650016851F /* LaunchScreen.storyboard */; };
 		50B271D11FEDC1A000F3C39B /* public in Resources */ = {isa = PBXBuildFile; fileRef = 50B271D01FEDC1A000F3C39B /* public */; };
+		E7540FAA7C31FF1A7BA9A921 /* Ball.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB15A9EBA163DB65ECAF0154 /* Ball.swift */; };
+		F2D5E6431115F141759FC8C7 /* Field.swift in Sources */ = {isa = PBXBuildFile; fileRef = 825556636C9D2A5F42FBFC7E /* Field.swift */; };
+		5D11CBDA3C72019A6E553009 /* Player.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC68FC50B1E292620A531518 /* Player.swift */; };
+		32A4595EC9BCC1E2B89F8C4A /* Vec2.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD9139B7BC542D19C87091B9 /* Vec2.swift */; };
+		DF69BB6E1A238F85CA42A01C /* Constants.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DF5A14FEC011FE8335287A1 /* Constants.swift */; };
+		9B73EA042E840839429E7C95 /* GameEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4247EF8DD1A9E788411BD75E /* GameEngine.swift */; };
+		81D22A991081A1EBA604A40C /* Physics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15CD887F9D57C879A2835EFE /* Physics.swift */; };
+		97BAFFDA80E533D044758598 /* AIController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3892E170BB11F02D79A7D8C /* AIController.swift */; };
+		95A635511FA706E323A8656B /* Encoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2C464DF36AD6C1B5564D987 /* Encoder.swift */; };
+		912917AC247B18BCC306A112 /* NeuralNet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B59418DCE4FA65C84296426F /* NeuralNet.swift */; };
+		053FBFFA9CD51AACBDBEB94F /* RLAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6270873CB73802F9C1FB3940 /* RLAgent.swift */; };
+		917C3A3AB3DDC860A517CEE1 /* GameScene.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D597F0544480FF7EB9F5DBD /* GameScene.swift */; };
+		647479DCDBEA9258E8A5C7F7 /* Joystick.swift in Sources */ = {isa = PBXBuildFile; fileRef = D72DC108DBB3BB8FB73DFC4B /* Joystick.swift */; };
+		861F819CF4AD5B522E00EFCC /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B729749F92272FE32FA5393 /* ContentView.swift */; };
+		B2C5FD240251E732C6C070A7 /* kickzone-rl-gen1325.json in Resources */ = {isa = PBXBuildFile; fileRef = C8C3D7821943EAFD957B29B2 /* kickzone-rl-gen1325.json */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +43,21 @@
 		504EC3131FED79650016851F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		50B271D01FEDC1A000F3C39B /* public */ = {isa = PBXFileReference; lastKnownFileType = folder; path = public; sourceTree = "<group>"; };
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
+		FB15A9EBA163DB65ECAF0154 /* Ball.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Ball.swift; sourceTree = "<group>"; };
+		825556636C9D2A5F42FBFC7E /* Field.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Field.swift; sourceTree = "<group>"; };
+		CC68FC50B1E292620A531518 /* Player.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Player.swift; sourceTree = "<group>"; };
+		DD9139B7BC542D19C87091B9 /* Vec2.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Vec2.swift; sourceTree = "<group>"; };
+		9DF5A14FEC011FE8335287A1 /* Constants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Constants.swift; sourceTree = "<group>"; };
+		4247EF8DD1A9E788411BD75E /* GameEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameEngine.swift; sourceTree = "<group>"; };
+		15CD887F9D57C879A2835EFE /* Physics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Physics.swift; sourceTree = "<group>"; };
+		B3892E170BB11F02D79A7D8C /* AIController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIController.swift; sourceTree = "<group>"; };
+		D2C464DF36AD6C1B5564D987 /* Encoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Encoder.swift; sourceTree = "<group>"; };
+		B59418DCE4FA65C84296426F /* NeuralNet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralNet.swift; sourceTree = "<group>"; };
+		6270873CB73802F9C1FB3940 /* RLAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RLAgent.swift; sourceTree = "<group>"; };
+		1D597F0544480FF7EB9F5DBD /* GameScene.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameScene.swift; sourceTree = "<group>"; };
+		D72DC108DBB3BB8FB73DFC4B /* Joystick.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Joystick.swift; sourceTree = "<group>"; };
+		5B729749F92272FE32FA5393 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		C8C3D7821943EAFD957B29B2 /* kickzone-rl-gen1325.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = kickzone-rl-gen1325.json; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -62,7 +92,8 @@
 		504EC3061FED79650016851F /* App */ = {
 			isa = PBXGroup;
 			children = (
-				50379B222058CBB4000EE86E /* capacitor.config.json */,
+								50267A6EDE10AB5AC61EF8A3 /* KickZone */,
+			50379B222058CBB4000EE86E /* capacitor.config.json */,
 				504EC3071FED79650016851F /* AppDelegate.swift */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
 				504EC30E1FED79650016851F /* Assets.xcassets */,
@@ -72,6 +103,84 @@
 				50B271D01FEDC1A000F3C39B /* public */,
 			);
 			path = App;
+			sourceTree = "<group>";
+		};
+		35DA2CFB929C7D50F55171DA /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				FB15A9EBA163DB65ECAF0154 /* Ball.swift */,
+				825556636C9D2A5F42FBFC7E /* Field.swift */,
+				CC68FC50B1E292620A531518 /* Player.swift */,
+				DD9139B7BC542D19C87091B9 /* Vec2.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		5AFAFB872258C27B943A9570 /* Game */ = {
+			isa = PBXGroup;
+			children = (
+				9DF5A14FEC011FE8335287A1 /* Constants.swift */,
+				4247EF8DD1A9E788411BD75E /* GameEngine.swift */,
+				15CD887F9D57C879A2835EFE /* Physics.swift */,
+			);
+			path = Game;
+			sourceTree = "<group>";
+		};
+		832AE668AA09C6D49827A9B0 /* AI */ = {
+			isa = PBXGroup;
+			children = (
+				B3892E170BB11F02D79A7D8C /* AIController.swift */,
+				D2C464DF36AD6C1B5564D987 /* Encoder.swift */,
+				B59418DCE4FA65C84296426F /* NeuralNet.swift */,
+				6270873CB73802F9C1FB3940 /* RLAgent.swift */,
+			);
+			path = AI;
+			sourceTree = "<group>";
+		};
+		CEF89279125D87C6E94D68BE /* Rendering */ = {
+			isa = PBXGroup;
+			children = (
+				1D597F0544480FF7EB9F5DBD /* GameScene.swift */,
+			);
+			path = Rendering;
+			sourceTree = "<group>";
+		};
+		8F0EBD659ED9CAD444415E58 /* Controls */ = {
+			isa = PBXGroup;
+			children = (
+				D72DC108DBB3BB8FB73DFC4B /* Joystick.swift */,
+			);
+			path = Controls;
+			sourceTree = "<group>";
+		};
+		6F8E56CA0C2F3727B7D3B227 /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				5B729749F92272FE32FA5393 /* ContentView.swift */,
+			);
+			path = UI;
+			sourceTree = "<group>";
+		};
+		61A1829C3B9C6F472C2E0B4F /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				C8C3D7821943EAFD957B29B2 /* kickzone-rl-gen1325.json */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		50267A6EDE10AB5AC61EF8A3 /* KickZone */ = {
+			isa = PBXGroup;
+			children = (
+				35DA2CFB929C7D50F55171DA /* Models */,
+				5AFAFB872258C27B943A9570 /* Game */,
+				832AE668AA09C6D49827A9B0 /* AI */,
+				CEF89279125D87C6E94D68BE /* Rendering */,
+				8F0EBD659ED9CAD444415E58 /* Controls */,
+				6F8E56CA0C2F3727B7D3B227 /* UI */,
+				61A1829C3B9C6F472C2E0B4F /* Resources */,
+			);
+			path = KickZone;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -139,7 +248,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				504EC3121FED79650016851F /* LaunchScreen.storyboard in Resources */,
+								B2C5FD240251E732C6C070A7 /* kickzone-rl-gen1325.json in Resources */,
+			504EC3121FED79650016851F /* LaunchScreen.storyboard in Resources */,
 				50B271D11FEDC1A000F3C39B /* public in Resources */,
 				504EC30F1FED79650016851F /* Assets.xcassets in Resources */,
 				50379B232058CBB4000EE86E /* capacitor.config.json in Resources */,
@@ -155,7 +265,21 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
+								E7540FAA7C31FF1A7BA9A921 /* Ball.swift in Sources */,
+				F2D5E6431115F141759FC8C7 /* Field.swift in Sources */,
+				5D11CBDA3C72019A6E553009 /* Player.swift in Sources */,
+				32A4595EC9BCC1E2B89F8C4A /* Vec2.swift in Sources */,
+				DF69BB6E1A238F85CA42A01C /* Constants.swift in Sources */,
+				9B73EA042E840839429E7C95 /* GameEngine.swift in Sources */,
+				81D22A991081A1EBA604A40C /* Physics.swift in Sources */,
+				97BAFFDA80E533D044758598 /* AIController.swift in Sources */,
+				95A635511FA706E323A8656B /* Encoder.swift in Sources */,
+				912917AC247B18BCC306A112 /* NeuralNet.swift in Sources */,
+				053FBFFA9CD51AACBDBEB94F /* RLAgent.swift in Sources */,
+				917C3A3AB3DDC860A517CEE1 /* GameScene.swift in Sources */,
+				647479DCDBEA9258E8A5C7F7 /* Joystick.swift in Sources */,
+				861F819CF4AD5B522E00EFCC /* ContentView.swift in Sources */,
+			504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
