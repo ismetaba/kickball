@@ -20,16 +20,28 @@ class Renderer {
     }
 
     resize() {
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        // When game is CSS-rotated (portrait mobile), swap dimensions
-        const isPortraitMobile = window.innerWidth < 768 && window.innerHeight > window.innerWidth;
-        const w = isPortraitMobile ? window.innerHeight : window.innerWidth;
-        const h = isPortraitMobile ? window.innerWidth : window.innerHeight;
-        this.canvas.width = w * dpr;
-        this.canvas.height = h * dpr;
-        this.ctx.scale(dpr, dpr);
+        // Use the device's real pixel ratio (capped at 3) and add a modest
+        // supersampling factor so thin vector strokes — which end up at
+        // ~0.3-0.7 CSS px after the world→screen downscale — don't turn into
+        // a blurry anti-aliased mush.
+        const rawDpr = Math.min(window.devicePixelRatio || 1, 3);
+        const supersample = 1.5;
+        const dpr = rawDpr * supersample;
+        // On iOS WKWebView, window dimensions can be 0 during startup or orientation changes.
+        // Fall back to document/screen dimensions, with a hard minimum to prevent zero-scale rendering.
+        let w = window.innerWidth || document.documentElement.clientWidth || screen.width || 320;
+        let h = window.innerHeight || document.documentElement.clientHeight || screen.height || 480;
+        // Absolute minimum to prevent zero-scale canvas
+        w = Math.max(w, 320);
+        h = Math.max(h, 240);
+        this.canvas.width = Math.round(w * dpr);
+        this.canvas.height = Math.round(h * dpr);
+        this.canvas.style.width = w + 'px';
+        this.canvas.style.height = h + 'px';
+        this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         this.w = w;
         this.h = h;
+        this.dpr = dpr;
         this._bgGrad = null; // invalidate cache
     }
 
@@ -377,53 +389,49 @@ class Renderer {
         // Decay super kick
         if (isSuper && ballSpeed < 3) ball.superKick = 0;
 
-        // Trail (flat array based — no object allocation)
-        if ((isSuper || isFire) && ballSpeed > 2) {
-            // Fire trail
-            const len = ball.trail.length;
-            for (let i = 0; i < len; i += 2) {
-                const idx = i >> 1;
-                const alpha = 1 - idx / (len / 2);
-                if (alpha <= 0) continue;
-                if (isBlue) {
-                    ctx.fillStyle = `rgba(${Math.floor(80 + alpha * 80)},${Math.floor(160 + alpha * 60)},255,${alpha * 0.7})`;
-                } else {
-                    ctx.fillStyle = `rgba(255,${Math.floor(100 + alpha * 120)},${Math.floor(alpha * 30)},${alpha * 0.6})`;
+        // Trail (circular buffer based — O(1) per frame)
+        const trailPts = ball.getTrailPoints ? ball.getTrailPoints() : [];
+        const trailLen = trailPts.length;
+        if (trailLen > 0) {
+            if ((isSuper || isFire) && ballSpeed > 2) {
+                for (let i = 0; i < trailLen; i += 2) {
+                    const alpha = 1 - (i >> 1) / (trailLen / 2);
+                    if (alpha <= 0) continue;
+                    if (isBlue) {
+                        ctx.fillStyle = `rgba(${80 + (alpha * 80) | 0},${160 + (alpha * 60) | 0},255,${alpha * 0.7})`;
+                    } else {
+                        ctx.fillStyle = `rgba(255,${100 + (alpha * 120) | 0},${(alpha * 30) | 0},${alpha * 0.6})`;
+                    }
+                    ctx.beginPath();
+                    ctx.arc(trailPts[i], trailPts[i + 1], ball.radius * alpha * 1.2, 0, Math.PI * 2);
+                    ctx.fill();
                 }
-                ctx.beginPath();
-                ctx.arc(ball.trail[i], ball.trail[i + 1], ball.radius * alpha * 1.2, 0, Math.PI * 2);
-                ctx.fill();
-            }
 
-            // Fire glow (simple circle)
-            ctx.globalAlpha = 0.25;
-            ctx.fillStyle = isBlue ? '#4488ff' : '#ff8800';
-            ctx.beginPath();
-            ctx.arc(ball.x, ball.y, ball.radius * 2.5, 0, Math.PI * 2);
-            ctx.fill();
-
-            // Level 2: pulsing outer ring
-            if (isBlue) {
-                const pulse = 0.15 + Math.sin(performance.now() * 0.01) * 0.1;
-                ctx.globalAlpha = pulse;
-                ctx.strokeStyle = '#88ccff';
-                ctx.lineWidth = 2;
+                ctx.globalAlpha = 0.25;
+                ctx.fillStyle = isBlue ? '#4488ff' : '#ff8800';
                 ctx.beginPath();
-                ctx.arc(ball.x, ball.y, ball.radius * 3 + Math.sin(performance.now() * 0.008) * 4, 0, Math.PI * 2);
-                ctx.stroke();
-            }
-            ctx.globalAlpha = 1;
-        } else {
-            // Normal trail
-            const len = ball.trail.length;
-            for (let i = 0; i < len; i += 2) {
-                const idx = i >> 1;
-                const alpha = 1 - idx / (len / 2);
-                if (alpha <= 0) continue;
-                ctx.fillStyle = `rgba(160,200,255,${alpha * 0.3})`;
-                ctx.beginPath();
-                ctx.arc(ball.trail[i], ball.trail[i + 1], ball.radius * alpha, 0, Math.PI * 2);
+                ctx.arc(ball.x, ball.y, ball.radius * 2.5, 0, Math.PI * 2);
                 ctx.fill();
+
+                if (isBlue) {
+                    const pulse = 0.15 + Math.sin(performance.now() * 0.01) * 0.1;
+                    ctx.globalAlpha = pulse;
+                    ctx.strokeStyle = '#88ccff';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.arc(ball.x, ball.y, ball.radius * 3 + Math.sin(performance.now() * 0.008) * 4, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+                ctx.globalAlpha = 1;
+            } else {
+                for (let i = 0; i < trailLen; i += 2) {
+                    const alpha = 1 - (i >> 1) / (trailLen / 2);
+                    if (alpha <= 0) continue;
+                    ctx.fillStyle = `rgba(160,200,255,${alpha * 0.3})`;
+                    ctx.beginPath();
+                    ctx.arc(trailPts[i], trailPts[i + 1], ball.radius * alpha, 0, Math.PI * 2);
+                    ctx.fill();
+                }
             }
         }
 

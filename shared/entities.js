@@ -1,4 +1,16 @@
-// Game entities: Player, Ball, Field
+// Game entities: Player, Ball, Field (shared: browser + server)
+(function(root, factory) {
+    if (typeof module !== 'undefined' && module.exports) {
+        const Physics = require('./physics');
+        const result = factory(Physics);
+        module.exports = result;
+    } else {
+        const result = factory(root.Physics);
+        root.Player = result.Player;
+        root.Ball = result.Ball;
+        root.Field = result.Field;
+    }
+})(typeof self !== 'undefined' ? self : this, function(Physics) {
 
 class Player {
     constructor(x, y, team, isHuman = false) {
@@ -10,7 +22,7 @@ class Player {
         this.vy = 0;
         this.radius = 24;
         this.mass = 1;
-        this.team = team; // 'red' or 'blue'
+        this.team = team;
         this.isHuman = isHuman;
         this.kickCooldown = 0;
         this.powerUp = null;
@@ -22,14 +34,12 @@ class Player {
         this.kickChargeRatio = 0;
         this.stunTimer = 0;
         this.momentumBonus = 0;
-        // Dash power-up state
         this.dashReady = false;
-        // Ball pull ability
         this.pullActive = false;
         this.pullCooldown = 0;
         this.pullDuration = 0;
-        this.pullMaxDuration = 1000;  // 1s max pull time
-        this.pullCooldownTime = 8000; // 8s cooldown
+        this.pullMaxDuration = 1000;
+        this.pullCooldownTime = 8000;
     }
 
     reset() {
@@ -46,9 +56,8 @@ class Player {
     }
 
     update(dt) {
-        const s = Physics.dtRatio; // Frame-rate independent scale factor
+        const s = Physics.dtRatio;
 
-        // Stunned: can't move, slide to a smooth stop
         if (this.stunTimer > 0) {
             this.stunTimer -= dt;
             const damping = Math.pow(0.997, dt);
@@ -62,7 +71,6 @@ class Player {
         if (this.kickCooldown > 0) this.kickCooldown -= dt;
         if (this.pullCooldown > 0) this.pullCooldown -= dt;
 
-        // Pull duration countdown
         if (this.pullActive) {
             this.pullDuration -= dt;
             if (this.pullDuration <= 0) {
@@ -79,11 +87,9 @@ class Player {
             }
         }
 
-        // Apply friction (frame-rate independent)
         this.vx *= Math.pow(Physics.FRICTION, s);
         this.vy *= Math.pow(Physics.FRICTION, s);
 
-        // Clamp speed
         const maxSpeed = this.getMaxSpeed();
         Physics.clampSpeed(this, maxSpeed);
 
@@ -129,7 +135,6 @@ class Player {
         const dx = ball.x - this.x;
         const dy = ball.y - this.y;
         const n = Physics.normalize(dx, dy);
-        // Low charge = moderate, high charge = strong
         const minForce = this.getKickForce() * 0.75;
         const maxForce = Physics.POWER_KICK_FORCE;
         const curve = Math.min(chargeRatio, 1);
@@ -138,12 +143,10 @@ class Player {
         ball.vx = n.x * force + this.vx * 0.3;
         ball.vy = n.y * force + this.vy * 0.3;
 
-        // Recoil: light taps keep momentum, charged kicks push back
         const recoilForce = chargeRatio * 3;
         this.vx = this.vx * (1 - chargeRatio * 0.7) - n.x * recoilForce;
         this.vy = this.vy * (1 - chargeRatio * 0.7) - n.y * recoilForce;
 
-        // Super kick at high charge — auto-aim toward enemy goal + ignite
         if (chargeRatio > 0.8) {
             ball.superKick = 1.0;
             ball.superTarget = this.team === 'red' ? 'right' : 'left';
@@ -153,21 +156,17 @@ class Player {
             ball.superTarget = null;
         }
 
-        // Ball spin/curve: calculate cross product between kick direction and player movement
         const perpX = -n.y;
         const perpY = n.x;
         const movePerp = this.vx * perpX + this.vy * perpY;
         const spinMultiplier = 0.25;
         ball.vx += perpX * movePerp * spinMultiplier;
         ball.vy += perpY * movePerp * spinMultiplier;
-
-        // Apply spin to ball for continuous curving in flight
         ball.spin = movePerp * 0.25;
 
-        // Ghost ball: kick makes ball pass through players
         if (this.powerUp === 'ghost') {
             ball.ghost = true;
-            ball.ghostTimer = 3000; // ghost lasts 3 seconds after kick
+            ball.ghostTimer = 3000;
             this.powerUp = null;
             this.powerUpTimer = 0;
         }
@@ -177,7 +176,6 @@ class Player {
         ball.lastKickedBy = this;
         return true;
     }
-
 }
 
 class Ball {
@@ -191,7 +189,10 @@ class Ball {
         this.radius = 14;
         this.mass = 0.5;
         this.lastKickedBy = null;
-        this.trail = [];
+        // Circular buffer for trail (avoids O(n) shift)
+        this.trail = new Float32Array(80); // max 40 pairs * 2
+        this.trailHead = 0;
+        this.trailCount = 0;
         this.spin = 0;
         this.superKick = 0;
         this.superTarget = null;
@@ -207,7 +208,8 @@ class Ball {
         this.vx = 0;
         this.vy = 0;
         this.lastKickedBy = null;
-        this.trail = [];
+        this.trailHead = 0;
+        this.trailCount = 0;
         this.spin = 0;
         this.superKick = 0;
         this.superTarget = null;
@@ -217,15 +219,36 @@ class Ball {
         this.ghostTimer = 0;
     }
 
+    _addTrailPoint(x, y, maxPairs) {
+        const idx = ((this.trailHead + this.trailCount) % (this.trail.length / 2)) * 2;
+        this.trail[idx] = x;
+        this.trail[idx + 1] = y;
+        if (this.trailCount < maxPairs) {
+            this.trailCount++;
+        } else {
+            this.trailHead = (this.trailHead + 1) % (this.trail.length / 2);
+        }
+    }
+
+    // Get trail as array of {x, y} for rendering
+    getTrailPoints() {
+        const points = [];
+        const halfLen = this.trail.length / 2;
+        for (let i = 0; i < this.trailCount; i++) {
+            const idx = ((this.trailHead + i) % halfLen) * 2;
+            points.push(this.trail[idx], this.trail[idx + 1]);
+        }
+        return points;
+    }
+
     ignite(level) {
         if (level > this.fireLevel) this.fireLevel = level;
         this.fireDuration = level >= 2 ? 4000 : 3000;
     }
 
-    update(dt) {
-        const s = Physics.dtRatio; // Frame-rate independent scale factor
+    update(dt, skipTrail = false) {
+        const s = Physics.dtRatio;
 
-        // Ghost decay
         if (this.ghost) {
             this.ghostTimer -= dt;
             if (this.ghostTimer <= 0) {
@@ -234,7 +257,6 @@ class Ball {
             }
         }
 
-        // Fire decay
         if (this.fireLevel > 0) {
             this.fireDuration -= dt;
             const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
@@ -247,7 +269,6 @@ class Ball {
         this.vx *= Math.pow(Physics.BALL_FRICTION, s);
         this.vy *= Math.pow(Physics.BALL_FRICTION, s);
 
-        // Apply spin as a lateral force perpendicular to ball movement direction
         if (Math.abs(this.spin) > 0.01) {
             const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
             if (speed > 0.5) {
@@ -266,23 +287,18 @@ class Ball {
         this.x += this.vx * s;
         this.y += this.vy * s;
 
-        // Trail effect — flat array [x0,y0,x1,y1,...] for performance
-        const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
-        const maxTrailLen = this.superKick > 0 ? 40 : 20; // max coordinate pairs (x2)
-        if (this.superKick > 0 && speed > 1) {
-            this.trail.push(this.x, this.y);
-            this.trail.push(this.x + ((this.vx * 3) % 6 - 3), this.y + ((this.vy * 3) % 6 - 3));
-        } else if (speed > 3) {
-            this.trail.push(this.x, this.y);
-        } else if (this.trail.length > 0) {
-            // Ball slowed down — shrink trail so it fades away instead of freezing
-            this.trail.shift();
-            this.trail.shift();
-        }
-        // Trim old trail entries from front (FIFO)
-        while (this.trail.length > maxTrailLen) {
-            this.trail.shift();
-            this.trail.shift();
+        // Trail effect — skip on server (uses circular buffer, O(1))
+        if (!skipTrail) {
+            const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+            const maxPairs = this.superKick > 0 ? 20 : 10;
+            if (this.superKick > 0 && speed > 1) {
+                this._addTrailPoint(this.x, this.y, maxPairs);
+                this._addTrailPoint(this.x + (Math.random() - 0.5) * 6, this.y + (Math.random() - 0.5) * 6, maxPairs);
+            } else if (speed > 3) {
+                this._addTrailPoint(this.x, this.y, maxPairs);
+            } else if (this.trailCount > 0) {
+                this.trailCount--;
+            }
         }
     }
 }
@@ -299,17 +315,16 @@ class Field {
         const padding = 30;
         let widthRatio, heightRatio;
 
-        // Map-specific physics modifiers (defaults)
-        this.frictionMod = 1.0;     // Multiplier on ball friction
-        this.bounceMod = 1.0;       // Multiplier on wall bounce
-        this.playerFrictionMod = 1.0; // Multiplier on player friction
+        this.frictionMod = 1.0;
+        this.bounceMod = 1.0;
+        this.playerFrictionMod = 1.0;
 
         switch (this.mapType) {
             case 'big':
                 widthRatio = 0.85;
                 heightRatio = 0.75;
                 break;
-            default: // classic
+            default:
                 widthRatio = 0.85;
                 heightRatio = 0.75;
         }
@@ -327,9 +342,11 @@ class Field {
         this.centerY = this.y + this.height / 2;
         this.centerRadius = Math.min(this.width, this.height) * 0.15;
 
-        // Penalty area dimensions
         this.penaltyWidth = this.width * 0.15;
         this.penaltyHeight = this.height * 0.5;
         this.penaltyY = this.y + (this.height - this.penaltyHeight) / 2;
     }
 }
+
+return { Player, Ball, Field };
+});

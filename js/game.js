@@ -1,3 +1,22 @@
+// Deterministic PRNG for lockstep multiplayer (xorshift32)
+class SeededRNG {
+    constructor(seed) {
+        this.s = seed || 1;
+    }
+    next() {
+        this.s ^= this.s << 13;
+        this.s ^= this.s >> 17;
+        this.s ^= this.s << 5;
+        return (this.s >>> 0) / 4294967296;
+    }
+    nextInt(max) {
+        return (this.next() * max) | 0;
+    }
+    seed(s) {
+        this.s = s || 1;
+    }
+}
+
 // Main game logic
 class Game {
     constructor() {
@@ -54,6 +73,14 @@ class Game {
         this._aiVsAiTypes = null;
         this._baseGameSpeed = Physics.GAME_SPEED;
 
+        // Lockstep deterministic multiplayer
+        this.rng = new SeededRNG(12345);
+        this.tickCount = 0;
+        this._accumulator = 0;
+        this.isLockstep = false;
+        this._lockstepInputBuffer = null;
+        this._myPlayerIdx = 0;
+
         // Online multiplayer state
         this.isOnline = false;
         this.isHost = false;
@@ -67,11 +94,26 @@ class Game {
             shots: { red: 0, blue: 0 },
         };
 
-        // Cached DOM elements (avoid getElementById every frame)
+        // Cached DOM elements (avoid getElementById every frame).
+        // All HUD mutations go through these refs so a missing element
+        // is a no-op instead of a crash.
         this._dom = {
             timer: document.getElementById('timer'),
             redBar: document.getElementById('momentum-fill-red'),
             blueBar: document.getElementById('momentum-fill-blue'),
+            redScore: document.getElementById('red-score'),
+            blueScore: document.getElementById('blue-score'),
+            goalNotif: document.getElementById('goal-notification'),
+            goalText: document.querySelector('#goal-notification .goal-text'),
+            goalScorer: document.querySelector('#goal-notification .goal-scorer'),
+            powerUpNotif: document.getElementById('powerup-notification'),
+            powerUpText: document.querySelector('#powerup-notification .powerup-text'),
+            pauseOverlay: document.getElementById('pause-overlay'),
+            resultOverlay: document.getElementById('result-overlay'),
+            resultTitle: document.getElementById('result-title'),
+            resultScore: document.getElementById('result-score'),
+            matchStats: document.getElementById('match-stats'),
+            pullBtn: document.getElementById('btn-pull'),
         };
 
         // Cached team arrays (rebuilt when players change, not every frame)
@@ -82,7 +124,40 @@ class Game {
         this.VIRTUAL_W = 800;
         this.VIRTUAL_H = 500;
 
+        // Pending timers (tracked so quit() can cancel them cleanly)
+        this._pendingTimers = new Set();
+        this._rafId = null;
+
+        // Debounced orientation handler — avoids queuing N setTimeouts
+        // if the user rotates rapidly.
+        this._orientationTimers = [];
         window.addEventListener('resize', () => this.onResize());
+        window.addEventListener('orientationchange', () => {
+            // Cancel any pending orientation resizes from a prior rotation
+            for (const id of this._orientationTimers) clearTimeout(id);
+            this._orientationTimers.length = 0;
+            // iOS WKWebView needs extra time to settle new dimensions after rotation
+            this._orientationTimers.push(setTimeout(() => this.onResize(), 100));
+            this._orientationTimers.push(setTimeout(() => this.onResize(), 300));
+            this._orientationTimers.push(setTimeout(() => this.onResize(), 500));
+        });
+    }
+
+    // Tracked setTimeout: auto-cancelled by quit()
+    _setTimeout(fn, ms) {
+        const id = setTimeout(() => {
+            this._pendingTimers.delete(id);
+            fn();
+        }, ms);
+        this._pendingTimers.add(id);
+        return id;
+    }
+
+    _clearAllTimers() {
+        for (const id of this._pendingTimers) clearTimeout(id);
+        this._pendingTimers.clear();
+        for (const id of this._orientationTimers) clearTimeout(id);
+        this._orientationTimers.length = 0;
     }
 
     rebuildTeamCache() {
@@ -90,21 +165,54 @@ class Game {
         this._blueTeam = this.players.filter(p => p.team === 'blue');
     }
 
+    // Build the right AI for the current difficulty.
+    // - 1v1 expert: use the 1v1 PPO agent if available
+    // - 2v2 expert: use the 2v2 PPO agent (each AI player gets its own
+    //   runtime instance backed by the SAME shared policy)
+    _makeAI() {
+        const diff = this.settings.difficulty;
+        const ts = this.settings.teamSize;
+        if (diff === 'expert' && ts === 1
+            && typeof RLOrchestrator !== 'undefined'
+            && window.rlOrch && window.rlOrch.hasTrainedAgent()
+            && typeof RLRuntimeAgent !== 'undefined') {
+            const ag = window.rlOrch.getRuntimeAgent();
+            if (ag) return ag;
+        }
+        if (diff === 'expert' && ts === 2
+            && typeof RLOrchestrator2v2 !== 'undefined'
+            && window.rlOrch2v2 && window.rlOrch2v2.hasTrainedAgent()
+            && typeof RLRuntimeAgent2v2 !== 'undefined') {
+            // Lazy-create the shared 2v2 runtime pool: each call hands out a
+            // fresh per-player agent that references the same policy weights.
+            if (!this._rl2v2Pool || this._rl2v2PoolToken !== window.rlOrch2v2.generation) {
+                this._rl2v2Pool = window.rlOrch2v2.getRuntimeAgents() || [];
+                this._rl2v2PoolToken = window.rlOrch2v2.generation;
+                this._rl2v2PoolIdx = 0;
+            }
+            const ag = this._rl2v2Pool[this._rl2v2PoolIdx % this._rl2v2Pool.length];
+            this._rl2v2PoolIdx++;
+            if (ag) return ag;
+        }
+        const fallbackDiff = (diff === 'expert') ? 'normal' : diff;
+        return new AIController(fallbackDiff || 'normal');
+    }
+
     _setVirtualSize(mapType) {
         const isMobile = window.innerWidth < 768 || window.innerHeight < 768;
         if (mapType === 'big') {
             this.VIRTUAL_W = 800;
             this.VIRTUAL_H = 500;
-            this.cameraZoom = isMobile ? 1.4 : 1;
+            this.cameraZoom = isMobile ? 2.2 : 1.4;
         } else if (mapType === 'huge') {
             this.VIRTUAL_W = 2400;
             this.VIRTUAL_H = 1600;
-            this.cameraZoom = 1.8; // zoom in — show portion of field around player
+            this.cameraZoom = 2.6;
         } else {
             // Classic
             this.VIRTUAL_W = 1500;
             this.VIRTUAL_H = 1000;
-            this.cameraZoom = isMobile ? 1.4 : 1;
+            this.cameraZoom = isMobile ? 2.2 : 1.4;
         }
         this._cameraX = this.VIRTUAL_W / 2;
         this._cameraY = this.VIRTUAL_H / 2;
@@ -112,7 +220,7 @@ class Game {
 
     _updateFieldViewScale() {
         const s = Math.min(this.renderer.w / this.VIRTUAL_W, this.renderer.h / this.VIRTUAL_H);
-        this.renderer.fieldViewScale = s;
+        this.renderer.fieldViewScale = s || 0.1; // Prevent zero scale
         this.renderer.fieldViewOffsetX = (this.renderer.w - this.VIRTUAL_W * s) / 2;
         this.renderer.fieldViewOffsetY = (this.renderer.h - this.VIRTUAL_H * s) / 2;
     }
@@ -235,9 +343,7 @@ class Game {
             if (isHuman) {
                 this.humanPlayer = p;
             } else {
-                const redAi = this.settings.difficulty === 'expert' && typeof Trainer !== 'undefined' && Trainer.hasTrainedAgent()
-                    ? Trainer.getBestAgent()
-                    : new AIController(this.settings.difficulty === 'expert' ? 'normal' : this.settings.difficulty);
+                const redAi = this._makeAI();
                 this.aiControllers.push({ player: p, ai: redAi });
             }
         }
@@ -246,9 +352,7 @@ class Game {
         for (let i = 0; i < this.settings.teamSize; i++) {
             const p = new Player(positions.blue[i].x, positions.blue[i].y, 'blue', false);
             this.players.push(p);
-            const ai = this.settings.difficulty === 'expert' && typeof Trainer !== 'undefined' && Trainer.hasTrainedAgent()
-                ? Trainer.getBestAgent()
-                : new AIController(this.settings.difficulty === 'expert' ? 'normal' : this.settings.difficulty);
+            const ai = this._makeAI();
             this.aiControllers.push({ player: p, ai });
         }
 
@@ -275,153 +379,23 @@ class Game {
         this.suddenDeathShrink = 0;
         Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
 
-        this.applyMapPhysics();
-        this.lastTime = performance.now();
-        Sound.whistle(false);
-        Sound.startMusic();
-        this.loop();
-    }
-
-    createAI(type) {
-        switch (type) {
-            case 'trained':   return Trainer.getBestAgent();
-            case 'chaser':    return new ChaserAI();
-            case 'random':    return new RandomAI();
-            case 'defender':  return new DefenderAI();
-            case 'rule-based':
-            default:          return new AIController(this.settings.difficulty || 'normal');
-        }
-    }
-
-    startAIvsAI(redType, blueType) {
-        this.renderer.resize();
-        this._setVirtualSize(this.settings.map);
-        this._updateFieldViewScale();
-        this.field = new Field(this.VIRTUAL_W, this.VIRTUAL_H, this.settings.map);
-        this.ball = new Ball(this.field.centerX, this.field.centerY);
-
-        this.players = [];
-        this.aiControllers = [];
-        this.humanPlayer = null;
-        this.isSpectator = true;
-        this._aiVsAiTypes = { red: redType, blue: blueType };
-        this._baseGameSpeed = Physics.GAME_SPEED;
-
-        const positions = this.getSpawnPositions();
-
-        for (let i = 0; i < this.settings.teamSize; i++) {
-            const p = new Player(positions.red[i].x, positions.red[i].y, 'red', false);
-            this.players.push(p);
-            this.aiControllers.push({ player: p, ai: this.createAI(redType) });
-        }
-
-        for (let i = 0; i < this.settings.teamSize; i++) {
-            const p = new Player(positions.blue[i].x, positions.blue[i].y, 'blue', false);
-            this.players.push(p);
-            this.aiControllers.push({ player: p, ai: this.createAI(blueType) });
-        }
-
-        this.rebuildTeamCache();
-        this.powerUpManager = new PowerUpManager(this.field);
-        this.powerUpManager.enabled = this.settings.powerups;
-
-        this.redScore = 0;
-        this.blueScore = 0;
-        this.timeRemaining = this.settings.duration * 1000;
-        this.isRunning = true;
-        this.isPaused = false;
-        this.matchOver = false;
-        this.isGoalScored = false;
-        this.goalTimer = 0;
-        this.kickoffTeam = null;
-        this.kickoffActive = false;
-        this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
-        this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
-        this.timeScale = 1.0;
-        this.combo = { team: null, count: 0 };
-        this.suddenDeath = false;
-        this.suddenDeathTimer = 0;
-        this.suddenDeathShrink = 0;
-        Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
+        this.tickCount = 0;
+        this._accumulator = 0;
+        this._endMatchScheduled = false;
+        this._goalNotifTimer = null;
+        this._powerUpNotifTimer = null;
 
         this.applyMapPhysics();
         this.lastTime = performance.now();
         Sound.whistle(false);
         Sound.startMusic();
+        if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = null; }
         this.loop();
-    }
 
-    setSpectatorSpeed(multiplier) {
-        Physics.GAME_SPEED = this._baseGameSpeed * multiplier;
-    }
-
-    startLocal1v1() {
-        this.renderer.resize();
-        this._setVirtualSize(this.settings.map || 'classic');
-        this._updateFieldViewScale();
-        this.field = new Field(this.VIRTUAL_W, this.VIRTUAL_H, this.settings.map || 'classic');
-        this.ball = new Ball(this.field.centerX, this.field.centerY);
-
-        this.players = [];
-        this.aiControllers = [];
-        this.isLocal1v1 = true;
-
-        const positions = this.getSpawnPositions();
-        const teamSize = this.settings.teamSize;
-
-        // Red team: P1 is human
-        for (let i = 0; i < teamSize; i++) {
-            const isHuman = (i === 0);
-            const p = new Player(positions.red[i].x, positions.red[i].y, 'red', isHuman);
-            this.players.push(p);
-            if (isHuman) {
-                this.humanPlayer = p;
-            } else {
-                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'normal') });
-            }
-        }
-
-        // Blue team: P2 is human
-        for (let i = 0; i < teamSize; i++) {
-            const isHuman = (i === 0);
-            const p = new Player(positions.blue[i].x, positions.blue[i].y, 'blue', isHuman);
-            this.players.push(p);
-            if (isHuman) {
-                this.humanPlayer2 = p;
-            } else {
-                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'normal') });
-            }
-        }
-
-        this.rebuildTeamCache();
-        this.powerUpManager = new PowerUpManager(this.field);
-        this.powerUpManager.enabled = this.settings.powerups !== false;
-
-        this.redScore = 0;
-        this.blueScore = 0;
-        this.timeRemaining = (this.settings.duration || 180) * 1000;
-        this.isRunning = true;
-        this.isPaused = false;
-        this.matchOver = false;
-        this.isGoalScored = false;
-        this.goalTimer = 0;
-        this.kickoffTeam = null;
-        this.kickoffActive = false;
-        this.practiceMode = false;
-        this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
-        this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
-        this.timeScale = 1.0;
-        this.combo = { team: null, count: 0 };
-        this.suddenDeath = false;
-        this.suddenDeathTimer = 0;
-        this.suddenDeathShrink = 0;
-        Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
-
-        this.applyMapPhysics();
-        this.lastTime = performance.now();
-        Sound.whistle(false);
-        Sound.startMusic();
-        this.loop();
+        // iOS WKWebView fix: dimensions may not be available at startup.
+        // Re-resize after the view has settled to ensure correct canvas size.
+        this._setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 100);
+        this._setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 300);
     }
 
     startPractice() {
@@ -459,186 +433,426 @@ class Game {
         this.suddenDeath = false;
         this.suddenDeathTimer = 0;
         this.suddenDeathShrink = 0;
+        this._endMatchScheduled = false;
+        this._goalNotifTimer = null;
+        this._powerUpNotifTimer = null;
         Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
 
         this.applyMapPhysics();
         this.lastTime = performance.now();
         Sound.whistle(false);
         Sound.startMusic();
+        if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = null; }
         this.loop();
-    }
 
-    startOnlineMatch(settings, network, isHost) {
-        this.network = network;
-        this.isOnline = true;
-        this.isHost = isHost;
-        this.settings = { ...settings };
-
-        this.renderer.resize();
-        this._setVirtualSize(this.settings.map || 'classic');
-        this._updateFieldViewScale();
-        this.field = new Field(this.VIRTUAL_W, this.VIRTUAL_H, this.settings.map || 'classic');
-        this.ball = new Ball(this.field.centerX, this.field.centerY);
-
-        this.players = [];
-        this.aiControllers = [];
-
-        const positions = this.getSpawnPositions();
-        const teamSize = this.settings.teamSize;
-
-        // Red team: first player is human (local for host, remote for guest)
-        for (let i = 0; i < teamSize; i++) {
-            const isRedHuman = (i === 0);
-            const p = new Player(positions.red[i].x, positions.red[i].y, 'red', isRedHuman);
-            this.players.push(p);
-            if (isRedHuman) {
-                if (isHost) this.humanPlayer = p;
-                else this.remoteHumanPlayer = p;
-            } else {
-                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'normal') });
-            }
-        }
-
-        // Blue team: first player is human (remote for host, local for guest)
-        for (let i = 0; i < teamSize; i++) {
-            const isBlueHuman = (i === 0);
-            const p = new Player(positions.blue[i].x, positions.blue[i].y, 'blue', isBlueHuman);
-            this.players.push(p);
-            if (isBlueHuman) {
-                if (isHost) this.remoteHumanPlayer = p;
-                else this.humanPlayer = p;
-            } else {
-                this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'normal') });
-            }
-        }
-
-        // Setup network callbacks
-        if (isHost) {
-            network.onRemoteInput = (inputData) => {
-                Object.assign(this.remoteInput, inputData);
-            };
-        } else {
-            network.onStateSnapshot = (snapshot) => {
-                network.deserializeState(snapshot, this);
-            };
-            network.onGoalScored = (data) => {
-                const notif = document.getElementById('goal-notification');
-                notif.querySelector('.goal-text').textContent = 'GOAL!';
-                notif.querySelector('.goal-scorer').textContent = data.team.toUpperCase() + ' Team';
-                notif.classList.remove('hidden');
-                this.isGoalScored = true;
-                this.goalTimer = 2500;
-                this.kickoffTeam = data.team === 'red' ? 'blue' : 'red';
-                this.renderer.triggerShake(1.0);
-                this.renderer.spawnConfetti(data.team);
-            };
-            network.onMatchEnd = (data) => {
-                this.redScore = data.red;
-                this.blueScore = data.blue;
-                this.endMatch();
-            };
-        }
-
-        this.rebuildTeamCache();
-        this.powerUpManager = new PowerUpManager(this.field);
-        this.powerUpManager.enabled = this.settings.powerups !== false;
-
-        this.redScore = 0;
-        this.blueScore = 0;
-        this.timeRemaining = (this.settings.duration || 180) * 1000;
-        this.isRunning = true;
-        this.isPaused = false;
-        this.matchOver = false;
-        this.isGoalScored = false;
-        this.goalTimer = 0;
-        this.kickoffTeam = null;
-        this.kickoffActive = false;
-        this.practiceMode = false;
-        this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
-        this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
-        this.timeScale = 1.0;
-        this.combo = { team: null, count: 0 };
-        this.suddenDeath = false;
-        this.suddenDeathTimer = 0;
-        this.suddenDeathShrink = 0;
-        Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
-
-        this.applyMapPhysics();
-        this.lastTime = performance.now();
-        Sound.whistle(false);
-        Sound.startMusic();
-        this.loop();
+        // iOS WKWebView fix: dimensions may not be available at startup.
+        this._setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 100);
+        this._setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 300);
     }
 
     loop() {
-        if (!this.isRunning) return;
+        if (!this.isRunning) { this._rafId = null; return; }
 
-        const now = performance.now();
-        const dt = Math.min(now - this.lastTime, 100);
-        this.lastTime = now;
+        try {
+            const now = performance.now();
+            const elapsed = Math.min(now - this.lastTime, 100);
+            this.lastTime = now;
 
-        if (!this.isPaused) {
-            this.update(dt);
+            if (!this.isPaused) {
+                if (this.isLockstep) {
+                    // Lockstep P2P: schedule 1 input, consume 1 tick per frame.
+                    // _applyPeerInputs schedules input for (tickCount + INPUT_DELAY).
+                    // We must consume exactly 1 tick so tickCount advances by 1,
+                    // keeping the pipeline aligned: each frame fills the next gap.
+                    // At 60fps this gives 60Hz physics (matching TICK_MS = 16.67).
+                    if (this._applyPeerInputs) this._applyPeerInputs();
+                    if (this._lockstepCanAdvance()) {
+                        this._lockstepTick();
+                    }
+                } else if (this.isOnline) {
+                    this._onlineUpdate(elapsed);
+                } else {
+                    // Fixed timestep accumulator for offline play
+                    this._accumulator = (this._accumulator || 0) + elapsed;
+                    const TICK_MS = 16.67;
+                    while (this._accumulator >= TICK_MS) {
+                        this._accumulator -= TICK_MS;
+                        Physics.dtRatio = Physics.GAME_SPEED;
+                        this.update(TICK_MS);
+                        this.tickCount++;
+                    }
+                }
+            }
+
+            // Goal timer (uses real time for display purposes)
+            if (!this.isOnline && this.isGoalScored) {
+                this.goalTimer -= elapsed;
+                if (this.goalTimer <= 0) {
+                    this.isGoalScored = false;
+                    if (this._dom.goalNotif) this._dom.goalNotif.classList.add('hidden');
+                    this.resetAfterGoal();
+                }
+            }
+
+            this.renderer.updateConfetti(elapsed);
+            this.renderer.updateNetRipple(elapsed);
+            this.renderer.updateHitFlashes();
+
+            if (this.isOnline && this.ball) {
+                const speed = Math.sqrt(this.ball.vx * this.ball.vx + this.ball.vy * this.ball.vy);
+                const maxPairs = this.ball.superKick > 0 ? 20 : 10;
+                if (speed > 3) {
+                    this.ball._addTrailPoint(this.ball.x, this.ball.y, maxPairs);
+                } else if (this.ball.trailCount > 0) {
+                    this.ball.trailCount--;
+                }
+            }
+
+            // Self-healing: if canvas has bad dimensions, re-resize
+            // (iOS WKWebView can report 0 dimensions during transitions)
+            if (this.renderer.w < 100 || this.renderer.h < 100) {
+                this.renderer.resize();
+                this._updateFieldViewScale();
+            }
+
+            this.render();
+        } catch (err) {
+            console.error('Game loop error:', err);
         }
 
-        if (this.isGoalScored) {
-            this.goalTimer -= dt;
-            if (this.goalTimer <= 0) {
-                this.isGoalScored = false;
-                document.getElementById('goal-notification').classList.add('hidden');
-                this.resetAfterGoal();
+        this._rafId = requestAnimationFrame(() => this.loop());
+    }
+
+    _lockstepCanAdvance() {
+        if (!this._lockstepInputBuffer) return false;
+        if (this._lockstepInputBuffer.has(this.tickCount)) return true;
+
+        // Input timeout: if we've been waiting >100ms for inputs, use last known input
+        // This prevents the game from stalling on brief packet loss
+        if (!this._lockstepWaitStart) {
+            this._lockstepWaitStart = performance.now();
+            return false;
+        }
+        const waited = performance.now() - this._lockstepWaitStart;
+        if (waited > 100) {
+            // Timeout: fill missing tick with last known inputs
+            const lastTick = this.tickCount - 1;
+            const lastInputs = this._lockstepLastInputs || new Map();
+            const fallbackMap = new Map();
+            const emptyInput = { x: 0, y: 0, kick: false, chargeRatio: 0, pull: false, switchPlayer: false };
+            for (let i = 0; i < this.players.length; i++) {
+                const last = lastInputs.get(i);
+                // Copy last directional input but clear one-shot actions
+                fallbackMap.set(i, last
+                    ? { x: last.x, y: last.y, kick: false, chargeRatio: 0, pull: last.pull, switchPlayer: false }
+                    : { ...emptyInput });
+            }
+            this._lockstepInputBuffer.set(this.tickCount, fallbackMap);
+            this._lockstepWaitStart = null;
+            console.warn(`Lockstep timeout at tick ${this.tickCount}, using last known input`);
+            return true;
+        }
+        return false;
+    }
+
+    _lockstepTick() {
+        const inputs = this._lockstepInputBuffer.get(this.tickCount);
+        this._lockstepInputBuffer.delete(this.tickCount);
+
+        // Reset wait timer and save inputs for timeout fallback
+        this._lockstepWaitStart = null;
+        if (inputs) this._lockstepLastInputs = inputs;
+
+        Physics.dtRatio = Physics.GAME_SPEED;
+        const TICK_MS = 16.67;
+
+        // Apply all player inputs for this tick.
+        // The "current controlled player" for a slot can change over time via SWAP,
+        // so we route inputs through _slotControlled instead of always using players[playerIdx].
+        if (inputs) {
+            for (const [playerIdx, inp] of inputs) {
+                const player = this._slotControlled?.get(playerIdx) || this.players[playerIdx];
+                if (!player) continue;
+
+                if (player.powerUp !== 'frozen' && player.stunTimer <= 0) {
+                    player.applyInput(inp.x, inp.y);
+                }
+
+                if (inp.kick && inp.chargeRatio > 0) {
+                    this.hitNearbyPlayers(player, inp.chargeRatio);
+                    if (player.kick(this.ball, inp.chargeRatio)) {
+                        this.stats.shots[player.team]++;
+                        const shakeIntensity = 0.15 + inp.chargeRatio * 0.85;
+                        this.renderer.triggerShake(shakeIntensity);
+                        this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.3 + inp.chargeRatio * 0.7);
+                        Sound.kick(inp.chargeRatio);
+                        const towardGoal = (player.team === 'red' && this.ball.vx > 0) || (player.team === 'blue' && this.ball.vx < 0);
+                        if (towardGoal) this.addMomentum(player.team);
+                    }
+                }
+                if (inp.pull) {
+                    if (!player.pullActive && player.pullCooldown <= 0 && Physics.distance(player, this.ball) < 150) {
+                        player.activatePull();
+                        if (playerIdx === this._myPlayerIdx) Sound.pullActivate();
+                    }
+                } else if (player.pullActive) {
+                    player.pullActive = false;
+                    player.pullDuration = 0;
+                    player.pullCooldown = player.pullCooldownTime;
+                }
+                // Player swap must run on EVERY peer for every slot's swap input,
+                // not just the peer that pressed it — otherwise the simulations diverge.
+                if (inp.switchPlayer && this._slotControlled) {
+                    const newHuman = this._swapToNearestTeammate(player);
+                    this._slotControlled.set(playerIdx, newHuman);
+                    if (playerIdx === this._myPlayerIdx) {
+                        this.humanPlayer = newHuman;
+                        Sound.switchPlayer();
+                    }
+                }
             }
         }
 
-        // Always update effects (even during goal pause)
-        this.renderer.updateConfetti(dt);
-        this.renderer.updateNetRipple(dt);
-        this.renderer.updateHitFlashes();
+        // Run physics update with lockstep flag active
+        this.update(TICK_MS);
+        this.tickCount++;
 
-        this.render();
+        // Checksum every 60 ticks with full state for auto-resync
+        if (this.tickCount % 60 === 0 && this.p2p) {
+            const hash = this._computeChecksum();
+            if (this.isP2PHost) {
+                // Include full state so guests can auto-resync on mismatch
+                const fullState = this._serializeFullState();
+                this.p2p.broadcastChecksum(this.tickCount, hash, fullState);
+            }
+        }
+    }
 
-        requestAnimationFrame(() => this.loop());
+    _computeChecksum() {
+        // Covers everything that can desync — position, velocity, timers,
+        // and whether a player is currently "human" for rendering purposes.
+        let h = 0;
+        for (const p of this.players) {
+            h = (h * 31 + ((p.x * 10) | 0)) | 0;
+            h = (h * 31 + ((p.y * 10) | 0)) | 0;
+            h = (h * 31 + ((p.vx * 100) | 0)) | 0;
+            h = (h * 31 + ((p.vy * 100) | 0)) | 0;
+            h = (h * 31 + ((p.stunTimer | 0))) | 0;
+            h = (h * 31 + ((p.pullCooldown | 0))) | 0;
+            h = (h * 31 + (p.isHuman ? 1 : 0)) | 0;
+        }
+        h = (h * 31 + ((this.ball.x * 10) | 0)) | 0;
+        h = (h * 31 + ((this.ball.y * 10) | 0)) | 0;
+        h = (h * 31 + ((this.ball.vx * 100) | 0)) | 0;
+        h = (h * 31 + ((this.ball.vy * 100) | 0)) | 0;
+        h = (h * 31 + this.redScore) | 0;
+        h = (h * 31 + this.blueScore) | 0;
+        return h;
+    }
+
+    // Serialize full game state for desync recovery
+    _serializeFullState() {
+        // Include which player each slot currently controls so swap state
+        // is also restored on a resync. Slots that don't exist in the map
+        // use their default index.
+        const slotCtrl = [];
+        if (this._slotControlled) {
+            for (const [slotIdx, player] of this._slotControlled) {
+                slotCtrl.push([slotIdx, this.players.indexOf(player)]);
+            }
+        }
+        const players = this.players.map(p => ({
+            x: Math.round(p.x * 100) / 100,
+            y: Math.round(p.y * 100) / 100,
+            vx: Math.round(p.vx * 100) / 100,
+            vy: Math.round(p.vy * 100) / 100,
+            st: p.stunTimer || 0,
+            pc: p.pullCooldown || 0,
+            ih: p.isHuman ? 1 : 0,
+        }));
+        return {
+            p: players,
+            bx: Math.round(this.ball.x * 100) / 100,
+            by: Math.round(this.ball.y * 100) / 100,
+            bvx: Math.round(this.ball.vx * 100) / 100,
+            bvy: Math.round(this.ball.vy * 100) / 100,
+            rs: this.redScore,
+            bs: this.blueScore,
+            tr: this.timeRemaining,
+            sc: slotCtrl,
+        };
+    }
+
+    // Apply full state from host to fix desync
+    _applyFullState(state) {
+        if (!state || !state.p) return;
+        for (let i = 0; i < this.players.length && i < state.p.length; i++) {
+            const p = this.players[i];
+            const sp = state.p[i];
+            p.x = sp.x;
+            p.y = sp.y;
+            p.vx = sp.vx;
+            p.vy = sp.vy;
+            if (sp.st !== undefined) p.stunTimer = sp.st;
+            if (sp.pc !== undefined) p.pullCooldown = sp.pc;
+            if (sp.ih !== undefined) p.isHuman = sp.ih === 1;
+        }
+        this.ball.x = state.bx;
+        this.ball.y = state.by;
+        this.ball.vx = state.bvx;
+        this.ball.vy = state.bvy;
+        this.redScore = state.rs;
+        this.blueScore = state.bs;
+        if (state.tr !== undefined) this.timeRemaining = state.tr;
+
+        // Restore the slot→controlled-player map
+        if (state.sc && this._slotControlled) {
+            this._slotControlled.clear();
+            for (const [slotIdx, playerIdx] of state.sc) {
+                if (playerIdx >= 0 && playerIdx < this.players.length) {
+                    this._slotControlled.set(slotIdx, this.players[playerIdx]);
+                }
+            }
+            // Rebuild aiControllers so AI runs only on non-human players
+            const controlledSet = new Set(this._slotControlled.values());
+            this.aiControllers = this.aiControllers.filter(ac => ac && !controlledSet.has(ac.player));
+            for (const p of this.players) {
+                if (!p.isHuman && !this.aiControllers.some(ac => ac.player === p)) {
+                    this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'normal') });
+                }
+            }
+            // Update local humanPlayer pointer
+            if (this._myPlayerIdx !== undefined) {
+                const mine = this._slotControlled.get(this._myPlayerIdx);
+                if (mine) this.humanPlayer = mine;
+            }
+        }
+    }
+
+    _onlineUpdate(dt) {
+        if (!this.network) return;
+
+        // 1. Send input to server
+        const sent = this.network.sendInput(this.input);
+        if (sent) {
+            this.input.kickRelease = false;
+            this.input.switchPlayer = false;
+        }
+
+        // 2. Interpolate all remote entities from server state buffer
+        //    This sets positions for remote players and ball via smooth interpolation.
+        //    For the local player, it stores the server target in network.serverPlayerPos.
+        this.network.interpolate(this);
+
+        // 3. Client-side prediction for local player
+        //    Apply input immediately so movement feels instant.
+        //    Then gently correct toward server position.
+        Physics.dtRatio = (dt / 16.67) * Physics.GAME_SPEED;
+        const hp = this.humanPlayer;
+        if (hp && hp.stunTimer <= 0 && hp.powerUp !== 'frozen') {
+            // Apply joystick input
+            hp.applyInput(this.input.x, this.input.y);
+
+            // Kick charge visual — use kickChargeStart (set on touchstart),
+            // not kickChargeTime (only set on release)
+            if (this.input.kickCharging) {
+                hp.kickChargeRatio = Math.min((performance.now() - this.input.kickChargeStart) / 1500, 1);
+                // Slow down while charging
+                const slowFactor = 1 - hp.kickChargeRatio * 0.015;
+                hp.vx *= Math.pow(slowFactor, Physics.dtRatio);
+                hp.vy *= Math.pow(slowFactor, Physics.dtRatio);
+            } else {
+                hp.kickChargeRatio = 0;
+            }
+
+            // Physics step
+            const s = Physics.dtRatio;
+            hp.vx *= Math.pow(Physics.FRICTION, s);
+            hp.vy *= Math.pow(Physics.FRICTION, s);
+            Physics.clampSpeed(hp, hp.getMaxSpeed());
+            hp.x += hp.vx * s;
+            hp.y += hp.vy * s;
+
+            // Constrain to field
+            if (this.field) {
+                Physics.constrainToField(hp, this.field, true);
+            }
+
+            // Server reconciliation: smoothly correct toward server position
+            // Skip reconciliation for the first second so the server catches up with our input
+            if (!this._onlineStartTime) this._onlineStartTime = performance.now();
+            const timeSinceStart = performance.now() - this._onlineStartTime;
+
+            const srv = this.network.serverPlayerPos;
+            if (srv && timeSinceStart > 1000) {
+                const errX = srv.x - hp.x;
+                const errY = srv.y - hp.y;
+                const errDist = Math.sqrt(errX * errX + errY * errY);
+
+                if (errDist > 60) {
+                    hp.x = srv.x;
+                    hp.y = srv.y;
+                    hp.vx = srv.vx;
+                    hp.vy = srv.vy;
+                } else if (errDist > 1) {
+                    // Only correct position, NOT velocity — velocity correction
+                    // fights the prediction and makes movement feel sluggish
+                    hp.x += errX * 0.1;
+                    hp.y += errY * 0.1;
+                }
+            }
+        }
+
+        // 4. Local collision resolution — prevent visual overlap
+        if (hp) {
+            // Player vs other players
+            for (const p of this.players) {
+                if (p === hp) continue;
+                const dx = p.x - hp.x;
+                const dy = p.y - hp.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const minDist = hp.radius + p.radius;
+                if (dist > 0 && dist < minDist) {
+                    const nx = dx / dist;
+                    const ny = dy / dist;
+                    const overlap = minDist - dist;
+                    // Push local player out (don't move remote — server owns them)
+                    hp.x -= nx * overlap;
+                    hp.y -= ny * overlap;
+                }
+            }
+            // Player vs ball
+            if (this.ball) {
+                const dx = this.ball.x - hp.x;
+                const dy = this.ball.y - hp.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const minDist = hp.radius + this.ball.radius;
+                if (dist > 0 && dist < minDist) {
+                    const nx = dx / dist;
+                    const ny = dy / dist;
+                    const overlap = minDist - dist;
+                    hp.x -= nx * overlap * 0.5;
+                    hp.y -= ny * overlap * 0.5;
+                }
+            }
+        }
+
+        // 5. Animate power-ups locally (visual only)
+        if (this.powerUpManager) {
+            const pups = this.powerUpManager.powerUps;
+            for (let i = 0; i < pups.length; i++) {
+                const pu = pups[i];
+                pu.bobTimer = (pu.bobTimer || 0) + dt * 0.003;
+                pu.scale = 1 + Math.sin(pu.bobTimer) * 0.15;
+                pu.rotateTimer = (pu.rotateTimer || 0) + dt * 0.002;
+                pu.pulseTimer = (pu.pulseTimer || 0) + dt * 0.004;
+            }
+        }
     }
 
     update(dt) {
-        // Guest: run local prediction for own player, send input to host
-        if (this.isOnline && !this.isHost) {
-            Physics.dtRatio = (dt / 16.67) * Physics.GAME_SPEED;
-            const sent = this.network ? this.network.sendInput(this.input) : false;
-
-            // Local prediction: apply own input immediately for responsiveness
-            const hp = this.humanPlayer;
-            if (hp && hp.stunTimer <= 0 && hp.powerUp !== 'frozen') {
-                hp.applyInput(this.input.x, this.input.y);
-
-                if (this.input.kickCharging) {
-                    hp.kickChargeRatio = Math.min(this.input.kickChargeTime / 1500, 1);
-                } else {
-                    hp.kickChargeRatio = 0;
-                }
-
-                if (this.input.switchPlayer) this.switchToNearestTeammate();
-
-                // Move own player locally (dt-scaled)
-                const s = Physics.dtRatio;
-                hp.vx *= Math.pow(0.92, s);
-                hp.vy *= Math.pow(0.92, s);
-                hp.x += hp.vx * s;
-                hp.y += hp.vy * s;
-
-                // Keep in bounds
-                const f = this.field;
-                hp.x = Math.max(f.x + hp.radius, Math.min(f.x + f.width - hp.radius, hp.x));
-                hp.y = Math.max(f.y + hp.radius, Math.min(f.y + f.height - hp.radius, hp.y));
-            }
-
-            // Only consume one-shot inputs after they were actually sent
-            if (sent) {
-                this.input.kickRelease = false;
-                this.input.switchPlayer = false;
-            }
-            return;
-        }
+        // Online mode is handled by _onlineUpdate() called from loop().
+        // This update() is called for offline/local/lockstep (inside _lockstepTick) matches.
 
         // Recover from slow-motion
         if (this.slowMoTimer > 0) {
@@ -652,7 +866,10 @@ class Game {
         // Apply time scale for slow-motion effects
         const rawDt = dt;
         dt *= this.timeScale;
-        Physics.dtRatio = (dt / 16.67) * Physics.GAME_SPEED;
+        // In lockstep/fixed timestep mode, dtRatio is already set by the caller
+        if (!this.isLockstep) {
+            Physics.dtRatio = (dt / 16.67) * Physics.GAME_SPEED;
+        }
 
         // Timer (skip in practice mode) - use raw dt so timer isn't affected by slow-mo
         if (!this.practiceMode) {
@@ -724,8 +941,8 @@ class Game {
 
         // Momentum HUD hidden (mechanic still active under the hood)
 
-        // Human input
-        if (this.humanPlayer && this.humanPlayer.powerUp !== 'frozen' && this.humanPlayer.stunTimer <= 0) {
+        // Human input (skipped in lockstep — inputs applied by _lockstepTick)
+        if (!this.isLockstep && this.humanPlayer && this.humanPlayer.powerUp !== 'frozen' && this.humanPlayer.stunTimer <= 0) {
             this.humanPlayer.applyInput(this.input.x, this.input.y);
 
             // Track charge time for visual feedback + slow player while charging
@@ -842,7 +1059,7 @@ class Game {
             const teammates = player.team === 'red' ? redTeam : blueTeam;
             const opponents = player.team === 'red' ? blueTeam : redTeam;
 
-            const action = ai.update(player, this.ball, this.field, teammates, opponents, dt);
+            const action = ai.update(player, this.ball, this.field, teammates, opponents, dt, this.rng);
 
             if (action.kick) {
                 const cr = action.chargeRatio || 0.3;
@@ -950,13 +1167,13 @@ class Game {
             }
         }
 
-        // Handle pull input for human player (must be in range)
-        if (this.humanPlayer && this.input.pull && !this.humanPlayer.pullActive && this.humanPlayer.pullCooldown <= 0
+        // Handle pull input for human player (must be in range) — skipped in lockstep
+        if (!this.isLockstep && this.humanPlayer && this.input.pull && !this.humanPlayer.pullActive && this.humanPlayer.pullCooldown <= 0
             && Physics.distance(this.humanPlayer, this.ball) < pullMaxRange) {
             this.humanPlayer.activatePull();
             Sound.pullActivate();
         }
-        if (this.humanPlayer && !this.input.pull && this.humanPlayer.pullActive) {
+        if (!this.isLockstep && this.humanPlayer && !this.input.pull && this.humanPlayer.pullActive) {
             // Released pull early — end it and start cooldown
             this.humanPlayer.pullActive = false;
             this.humanPlayer.pullDuration = 0;
@@ -1226,12 +1443,18 @@ class Game {
         else this.stats.possession.blue += dt;
 
         // Power-ups
-        const collected = this.powerUpManager.update(dt, this.players, this.suddenDeath);
+        const collected = this.powerUpManager.update(dt, this.players, this.suddenDeath, this.rng);
         if (collected) {
-            const notif = document.getElementById('powerup-notification');
-            notif.querySelector('.powerup-text').textContent = collected.type.label;
-            notif.classList.remove('hidden');
-            setTimeout(() => notif.classList.add('hidden'), 2000);
+            const notif = this._dom.powerUpNotif;
+            if (notif) {
+                if (this._dom.powerUpText) this._dom.powerUpText.textContent = collected.type.label;
+                notif.classList.remove('hidden');
+                if (this._powerUpNotifTimer) clearTimeout(this._powerUpNotifTimer);
+                this._powerUpNotifTimer = this._setTimeout(() => {
+                    notif.classList.add('hidden');
+                    this._powerUpNotifTimer = null;
+                }, 2000);
+            }
             if (collected.type.id === 'freeze' || collected.type.id === 'slow') Sound.freeze();
             else Sound.powerUpCollect();
         }
@@ -1257,10 +1480,10 @@ class Game {
 
         if (team === 'red') {
             this.redScore += goalPoints;
-            document.getElementById('red-score').textContent = this.redScore;
+            if (this._dom.redScore) this._dom.redScore.textContent = this.redScore;
         } else {
             this.blueScore += goalPoints;
-            document.getElementById('blue-score').textContent = this.blueScore;
+            if (this._dom.blueScore) this._dom.blueScore.textContent = this.blueScore;
         }
 
         // Track who scored — only credit if they scored for their own team (not own goal)
@@ -1287,14 +1510,16 @@ class Game {
         }
 
         // Show notification
-        const notif = document.getElementById('goal-notification');
+        const notif = this._dom.goalNotif;
         let goalText = isOwnGoal ? 'OWN GOAL!' : 'GOAL!';
         if (fireLevel >= 2) goalText = 'INFERNO GOAL!!!';
         else if (fireLevel >= 1) goalText = 'FIRE GOAL!';
-        notif.querySelector('.goal-text').textContent = goalText;
-        notif.querySelector('.goal-scorer').textContent =
-            scorer ? `${scorer.team.toUpperCase()} Team${goalPoints > 1 ? ' (+' + goalPoints + ')' : ''}` : '';
-        notif.classList.remove('hidden');
+        if (this._dom.goalText) this._dom.goalText.textContent = goalText;
+        if (this._dom.goalScorer) {
+            this._dom.goalScorer.textContent =
+                scorer ? `${scorer.team.toUpperCase()} Team${goalPoints > 1 ? ' (+' + goalPoints + ')' : ''}` : '';
+        }
+        if (notif) notif.classList.remove('hidden');
 
         this.isGoalScored = true;
         this.goalTimer = 2500;
@@ -1330,19 +1555,37 @@ class Game {
         if (this.isOnline && this.isHost && this.network) {
             this.network.send({ t: 'goal', d: { team: team } });
         }
+        // P2P host: broadcast goal to peers with full context so their overlay matches
+        if (this.isP2PHost && this.p2p) {
+            this.p2p.broadcastGoal({
+                team,
+                redScore: this.redScore,
+                blueScore: this.blueScore,
+                fireLevel,
+                points: goalPoints,
+                isOwnGoal,
+            });
+        }
 
         // Sudden death: first goal wins
         if (this.suddenDeath) {
-            setTimeout(() => this.endMatch(), 2100);
+            this._scheduleEndMatch(2100);
             return;
         }
 
         // Check goal limit
         if (this.settings.goalLimit > 0) {
             if (this.redScore >= this.settings.goalLimit || this.blueScore >= this.settings.goalLimit) {
-                setTimeout(() => this.endMatch(), 2100);
+                this._scheduleEndMatch(2100);
             }
         }
+    }
+
+    _scheduleEndMatch(ms) {
+        // Guard against double scheduling (e.g. goal-limit hit on a sudden-death goal)
+        if (this._endMatchScheduled) return;
+        this._endMatchScheduled = true;
+        this._setTimeout(() => this.endMatch(), ms);
     }
 
     resetAfterGoal() {
@@ -1371,62 +1614,99 @@ class Game {
         if (this.isOnline && this.isHost && this.network) {
             this.network.send({ t: 'end', d: { red: this.redScore, blue: this.blueScore } });
         }
+        // P2P host: broadcast match end to peers
+        if (this.isP2PHost && this.p2p) {
+            this.p2p.broadcastMatchEnd({ red: this.redScore, blue: this.blueScore });
+        }
 
-        const resultOverlay = document.getElementById('result-overlay');
-        const title = document.getElementById('result-title');
-        const score = document.getElementById('result-score');
-        const stats = document.getElementById('match-stats');
+        const resultOverlay = this._dom.resultOverlay;
+        const title = this._dom.resultTitle;
+        const score = this._dom.resultScore;
+        const stats = this._dom.matchStats;
 
         // Determine local team
         const localTeam = (this.isOnline && !this.isHost) ? 'blue' : 'red';
         const localScore = localTeam === 'red' ? this.redScore : this.blueScore;
         const remoteScore = localTeam === 'red' ? this.blueScore : this.redScore;
 
-        if (this.isSpectator) {
-            if (this.redScore > this.blueScore) {
-                title.textContent = 'RED WINS!';
+        if (title) {
+            if (this.isSpectator) {
+                if (this.redScore > this.blueScore) {
+                    title.textContent = 'RED WINS!';
+                    title.style.color = '#e94560';
+                } else if (this.blueScore > this.redScore) {
+                    title.textContent = 'BLUE WINS!';
+                    title.style.color = '#53d8fb';
+                } else {
+                    title.textContent = 'DRAW';
+                    title.style.color = '#aaa';
+                }
+                Physics.GAME_SPEED = this._baseGameSpeed;
+            } else if (localScore > remoteScore) {
+                title.textContent = 'YOU WIN!';
+                title.style.color = '#4caf50';
+                this._setTimeout(() => Sound.win(), 400);
+            } else if (remoteScore > localScore) {
+                title.textContent = 'YOU LOSE';
                 title.style.color = '#e94560';
-            } else if (this.blueScore > this.redScore) {
-                title.textContent = 'BLUE WINS!';
-                title.style.color = '#53d8fb';
+                this._setTimeout(() => Sound.lose(), 400);
             } else {
                 title.textContent = 'DRAW';
-                title.style.color = '#aaa';
+                title.style.color = '#53d8fb';
             }
-            Physics.GAME_SPEED = this._baseGameSpeed;
-        } else if (localScore > remoteScore) {
-            title.textContent = 'YOU WIN!';
-            title.style.color = '#4caf50';
-            setTimeout(() => Sound.win(), 400);
-        } else if (remoteScore > localScore) {
-            title.textContent = 'YOU LOSE';
-            title.style.color = '#e94560';
-            setTimeout(() => Sound.lose(), 400);
-        } else {
-            title.textContent = 'DRAW';
-            title.style.color = '#53d8fb';
         }
 
-        score.innerHTML = `<span style="color:#e94560">${this.redScore}</span> - <span style="color:#53d8fb">${this.blueScore}</span>`;
+        if (score) this._renderScoreDuo(score, this.redScore, this.blueScore);
 
         const totalPoss = this.stats.possession.red + this.stats.possession.blue;
         const redPoss = totalPoss > 0 ? Math.round((this.stats.possession.red / totalPoss) * 100) : 50;
 
-        if (this.isSpectator) {
-            stats.innerHTML = `
-                Possession: <span style="color:#e94560">${redPoss}%</span> - <span style="color:#53d8fb">${100 - redPoss}%</span><br>
-                Shots: <span style="color:#e94560">${this.stats.shots.red}</span> - <span style="color:#53d8fb">${this.stats.shots.blue}</span>
-            `;
-        } else {
-            stats.innerHTML = `
-                Possession: <span style="color:#e94560">${redPoss}%</span> - <span style="color:#53d8fb">${100 - redPoss}%</span><br>
-                Shots: <span style="color:#e94560">${this.stats.shots.red}</span> - <span style="color:#53d8fb">${this.stats.shots.blue}</span><br>
-                Your Goals: ${this.humanPlayer ? this.humanPlayer.goals : 0}<br>
-                Your Kicks: ${this.humanPlayer ? this.humanPlayer.kicks : 0}
-            `;
-        }
+        if (stats) this._renderMatchStats(stats, redPoss, this.isSpectator);
 
-        resultOverlay.classList.remove('hidden');
+        if (resultOverlay) resultOverlay.classList.remove('hidden');
+    }
+
+    // Build red-blue "X - Y" score markup safely (no innerHTML with interpolation)
+    _renderScoreDuo(el, red, blue) {
+        el.textContent = '';
+        const redSpan = document.createElement('span');
+        redSpan.style.color = '#e94560';
+        redSpan.textContent = String(red);
+        const blueSpan = document.createElement('span');
+        blueSpan.style.color = '#53d8fb';
+        blueSpan.textContent = String(blue);
+        el.appendChild(redSpan);
+        el.appendChild(document.createTextNode(' - '));
+        el.appendChild(blueSpan);
+    }
+
+    // Build match stats DOM without innerHTML
+    _renderMatchStats(el, redPoss, isSpectator) {
+        el.textContent = '';
+        const addRow = (label, redVal, blueVal) => {
+            const row = document.createElement('div');
+            row.appendChild(document.createTextNode(label + ': '));
+            const r = document.createElement('span');
+            r.style.color = '#e94560';
+            r.textContent = String(redVal);
+            row.appendChild(r);
+            row.appendChild(document.createTextNode(' - '));
+            const b = document.createElement('span');
+            b.style.color = '#53d8fb';
+            b.textContent = String(blueVal);
+            row.appendChild(b);
+            el.appendChild(row);
+        };
+        addRow('Possession', redPoss + '%', (100 - redPoss) + '%');
+        addRow('Shots', this.stats.shots.red, this.stats.shots.blue);
+        if (!isSpectator) {
+            const goals = document.createElement('div');
+            goals.textContent = `Your Goals: ${this.humanPlayer ? this.humanPlayer.goals : 0}`;
+            el.appendChild(goals);
+            const kicks = document.createElement('div');
+            kicks.textContent = `Your Kicks: ${this.humanPlayer ? this.humanPlayer.kicks : 0}`;
+            el.appendChild(kicks);
+        }
     }
 
     hitNearbyPlayers(kicker, chargeRatio) {
@@ -1452,79 +1732,42 @@ class Game {
         this.momentum[team] = Math.min(this.momentum.max, this.momentum[team] + amount);
     }
 
-    switchToNearestTeammate() {
-        if (!this.humanPlayer) return;
-        const teammates = this.players.filter(p =>
-            p.team === this.humanPlayer.team && p !== this.humanPlayer
-        );
-        if (teammates.length === 0) return;
-
+    // Swap control from `current` to the teammate closest to the ball.
+    // Returns the new human player (or `current` if no swap happened).
+    // Idempotent: never creates duplicate AI controllers for the same player.
+    _swapToNearestTeammate(current) {
+        if (!current) return current;
         let nearest = null;
         let nearestDist = Infinity;
-        for (const t of teammates) {
-            const d = Physics.distance(t, this.ball);
-            if (d < nearestDist) {
-                nearestDist = d;
-                nearest = t;
-            }
+        for (const p of this.players) {
+            if (p.team !== current.team || p === current) continue;
+            const d = Physics.distance(p, this.ball);
+            if (d < nearestDist) { nearestDist = d; nearest = p; }
         }
+        if (!nearest) return current;
 
-        if (nearest) {
-            // Old human becomes AI
-            this.humanPlayer.isHuman = false;
-            this.aiControllers.push({ player: this.humanPlayer, ai: new AIController(this.settings.difficulty) });
-
-            // New human
-            nearest.isHuman = true;
-            this.aiControllers = this.aiControllers.filter(c => c.player !== nearest);
-            this.humanPlayer = nearest;
+        current.isHuman = false;
+        if (!this.aiControllers.some(c => c.player === current)) {
+            this.aiControllers.push({
+                player: current,
+                ai: new AIController(this.settings.difficulty || 'normal'),
+            });
         }
+        nearest.isHuman = true;
+        this.aiControllers = this.aiControllers.filter(c => c.player !== nearest);
+        return nearest;
+    }
+
+    switchToNearestTeammate() {
+        this.humanPlayer = this._swapToNearestTeammate(this.humanPlayer);
     }
 
     switchToNearestTeammate_remote() {
-        if (!this.remoteHumanPlayer) return;
-        const teammates = this.players.filter(p =>
-            p.team === this.remoteHumanPlayer.team && p !== this.remoteHumanPlayer
-        );
-        if (teammates.length === 0) return;
-
-        let nearest = null;
-        let nearestDist = Infinity;
-        for (const t of teammates) {
-            const d = Physics.distance(t, this.ball);
-            if (d < nearestDist) { nearestDist = d; nearest = t; }
-        }
-
-        if (nearest) {
-            this.remoteHumanPlayer.isHuman = false;
-            this.aiControllers.push({ player: this.remoteHumanPlayer, ai: new AIController(this.settings.difficulty || 'normal') });
-            nearest.isHuman = true;
-            this.aiControllers = this.aiControllers.filter(c => c.player !== nearest);
-            this.remoteHumanPlayer = nearest;
-        }
+        this.remoteHumanPlayer = this._swapToNearestTeammate(this.remoteHumanPlayer);
     }
 
     switchToNearestTeammate_p2() {
-        if (!this.humanPlayer2) return;
-        const teammates = this.players.filter(p =>
-            p.team === this.humanPlayer2.team && p !== this.humanPlayer2
-        );
-        if (teammates.length === 0) return;
-
-        let nearest = null;
-        let nearestDist = Infinity;
-        for (const t of teammates) {
-            const d = Physics.distance(t, this.ball);
-            if (d < nearestDist) { nearestDist = d; nearest = t; }
-        }
-
-        if (nearest) {
-            this.humanPlayer2.isHuman = false;
-            this.aiControllers.push({ player: this.humanPlayer2, ai: new AIController(this.settings.difficulty || 'normal') });
-            nearest.isHuman = true;
-            this.aiControllers = this.aiControllers.filter(c => c.player !== nearest);
-            this.humanPlayer2 = nearest;
-        }
+        this.humanPlayer2 = this._swapToNearestTeammate(this.humanPlayer2);
     }
 
     render() {
@@ -1617,8 +1860,11 @@ class Game {
             this.renderer.drawSuddenDeathHUD();
         }
 
+        // Kick charge meter (visual feedback while holding KICK)
+        this._updateKickChargeMeter();
+
         // Update pull button visual state
-        const pullBtn = document.getElementById('btn-pull');
+        const pullBtn = this._dom.pullBtn;
         if (pullBtn && this.humanPlayer) {
             const hp = this.humanPlayer;
             if (hp.pullActive) {
@@ -1656,6 +1902,27 @@ class Game {
 
         // End frame (restore screen shake transform)
         this.renderer.endFrame();
+    }
+
+    _updateKickChargeMeter() {
+        if (!this._dom) return;
+        if (!this._dom.kickBtn) this._dom.kickBtn = document.getElementById('btn-kick');
+        const btn = this._dom.kickBtn;
+        if (!btn) return;
+        const hp = this.humanPlayer;
+        const charging = !!(this.input.kickCharging && hp && hp.powerUp !== 'frozen' && hp.stunTimer <= 0);
+        let ratio = 0;
+        if (charging) {
+            ratio = Math.min((performance.now() - (this.input.kickChargeStart || performance.now())) / 1500, 1);
+        }
+        if (charging) {
+            btn.classList.add('charging');
+            btn.style.setProperty('--charge', ratio.toFixed(3));
+        } else if (this._lastChargeRatio !== 0) {
+            btn.classList.remove('charging');
+            btn.style.setProperty('--charge', '0');
+        }
+        this._lastChargeRatio = charging ? ratio : 0;
     }
 
     _worldToScreen(wx, wy) {
@@ -1777,49 +2044,55 @@ class Game {
     }
 
     pause() {
-        if (this.isOnline) return; // No pausing in online matches
+        if (this.isOnline || this.isP2PHost || this.isLockstep) return; // No pausing in online/P2P matches
         this.isPaused = true;
         Sound.pause();
-        document.getElementById('pause-overlay').classList.remove('hidden');
+        if (this._dom.pauseOverlay) this._dom.pauseOverlay.classList.remove('hidden');
     }
 
     resume() {
         this.isPaused = false;
         this.lastTime = performance.now();
         Sound.resume();
-        document.getElementById('pause-overlay').classList.add('hidden');
+        if (this._dom.pauseOverlay) this._dom.pauseOverlay.classList.add('hidden');
     }
 
     restart() {
-        document.getElementById('pause-overlay').classList.add('hidden');
-        document.getElementById('result-overlay').classList.add('hidden');
-        document.getElementById('goal-notification').classList.add('hidden');
-        if (this._aiVsAiTypes) {
-            this.startAIvsAI(this._aiVsAiTypes.red, this._aiVsAiTypes.blue);
-        } else {
-            this.startMatch();
-        }
+        if (this._dom.pauseOverlay) this._dom.pauseOverlay.classList.add('hidden');
+        if (this._dom.resultOverlay) this._dom.resultOverlay.classList.add('hidden');
+        if (this._dom.goalNotif) this._dom.goalNotif.classList.add('hidden');
+        if (this._dom.powerUpNotif) this._dom.powerUpNotif.classList.add('hidden');
+        this.startMatch();
     }
 
     quit() {
         this.isRunning = false;
-        this.isLocal1v1 = false;
-        this.isSpectator = false;
-        this._aiVsAiTypes = null;
-        Physics.GAME_SPEED = this._baseGameSpeed;
+        this.isPaused = false;
+        this.matchOver = true;
+        if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = null; }
+        this._clearAllTimers();
+        this._goalNotifTimer = null;
+        this._powerUpNotifTimer = null;
+        this._endMatchScheduled = false;
+
+        // Reset per-match input state so a stale "kick held" / "movement" doesn't
+        // leak into the next match.
+        this.input.x = 0; this.input.y = 0;
+        this.input.kick = false;
+        this.input.kickCharging = false; this.input.kickRelease = false;
+        this.input.kickChargeTime = 0;
+        this.input.switchPlayer = false; this.input.pull = false;
+        this.input2.x = 0; this.input2.y = 0;
+        this.input2.kickCharging = false; this.input2.kickRelease = false;
+        this.input2.kickChargeTime = 0;
+        this.input2.switchPlayer = false; this.input2.pull = false;
+
         this.resetMapPhysics();
         Sound.stopMusic();
-        this.humanPlayer2 = null;
-        if (this.isOnline && this.network) {
-            this.network.destroy();
-            this.network = null;
-            this.isOnline = false;
-            this.isHost = false;
-        }
-        document.getElementById('pause-overlay').classList.add('hidden');
-        document.getElementById('result-overlay').classList.add('hidden');
-        document.getElementById('goal-notification').classList.add('hidden');
-        document.getElementById('disconnect-overlay').classList.add('hidden');
-        document.getElementById('online-hud').classList.add('hidden');
+        if (this._dom.pauseOverlay) this._dom.pauseOverlay.classList.add('hidden');
+        if (this._dom.resultOverlay) this._dom.resultOverlay.classList.add('hidden');
+        if (this._dom.goalNotif) this._dom.goalNotif.classList.add('hidden');
+        if (this._dom.powerUpNotif) this._dom.powerUpNotif.classList.add('hidden');
+        if (this._dom.timer) this._dom.timer.style.color = '';
     }
 }

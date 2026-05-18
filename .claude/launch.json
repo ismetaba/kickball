@@ -4,8 +4,9 @@
     {
       "name": "kickzone",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["http-server", ".", "-p", "8080", "-c-1"],
-      "port": 8080
+      "runtimeArgs": ["http-server", ".", "-c-1"],
+      "port": 3017,
+      "autoPort": true
     }
   ]
 }
