@@ -1,18 +1,30 @@
 // A single game room with lobby + match lifecycle
 const { ROOM_STATE, MSG } = require('./protocol');
 const GameSimulation = require('./game-simulation');
+const GameConstants = require('./../shared/constants');
+
+// Coerce client-supplied room settings to known-good values. Everything here
+// drives timers and array sizing in the simulation, so unvalidated values are
+// a robustness/DoS hazard — reject anything not on the whitelist.
+function sanitizeSettings(settings = {}) {
+    const teamSize = Number(settings.teamSize);
+    const duration = Number(settings.duration);
+    const goalLimit = Number(settings.goalLimit);
+    return {
+        teamSize: Number.isInteger(teamSize) && teamSize >= 1 && teamSize <= GameConstants.MAX_TEAM_SIZE
+            ? teamSize : 2,
+        duration: GameConstants.DURATIONS.includes(duration) ? duration : 180,
+        goalLimit: GameConstants.GOAL_LIMITS.includes(goalLimit) ? goalLimit : 5,
+        powerups: settings.powerups !== false,
+        map: GameConstants.MAPS[settings.map] ? settings.map : 'classic',
+    };
+}
 
 class GameRoom {
     constructor(roomCode, hostId, hostWs, hostName, settings) {
         this.roomCode = roomCode;
         this.state = ROOM_STATE.WAITING;
-        this.settings = {
-            teamSize: settings.teamSize || 2,
-            duration: settings.duration || 180,
-            goalLimit: settings.goalLimit || 5,
-            powerups: settings.powerups !== false,
-            map: settings.map || 'classic',
-        };
+        this.settings = sanitizeSettings(settings);
         this.createdAt = Date.now();
         this.hostId = hostId;
 

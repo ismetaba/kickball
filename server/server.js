@@ -44,6 +44,10 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({
     server,
+    // Reject oversized frames before buffering them — a single game message
+    // (input or relayed state) is well under 64 KB, so anything larger is
+    // either a bug or an attempt to exhaust server memory.
+    maxPayload: 64 * 1024,
     perMessageDeflate: {
         zlibDeflateOptions: { level: 1 }, // fastest compression
         threshold: 64, // only compress messages > 64 bytes
