@@ -284,28 +284,28 @@ struct GameView: View {
     @StateObject private var engine = GameEngine()
     @State private var sceneRef: GameScene? = nil
     @State private var showingEnd = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
-            // The scene is owned by SpriteView; we set up the engine first
-            SpriteView(scene: makeScene(), preferredFramesPerSecond: 60,
-                       options: [.shouldCullNonVisibleNodes],
-                       debugOptions: [])
-                .ignoresSafeArea()
-                .onAppear {
-                    if let policy = router.cachedRLPolicy {
-                        engine.expertAgentFactory = { RLAgent(policy: policy) }
-                    }
-                    engine.settings = router.settings
-                    engine.startMatch()
-                }
-                .onDisappear { engine.stop() }
+            // Build the SpriteKit scene exactly once (in onAppear, after the
+            // engine roster is populated) and hand SpriteView a stable instance.
+            // Creating it inline in `body` allocated a brand-new GameScene on
+            // every view re-evaluation.
+            if let scene = sceneRef {
+                SpriteView(scene: scene, preferredFramesPerSecond: 60,
+                           options: [.shouldCullNonVisibleNodes],
+                           debugOptions: [])
+                    .ignoresSafeArea()
+            } else {
+                Color.black.ignoresSafeArea()
+            }
 
             // Top HUD
             VStack {
                 HStack(spacing: 16) {
                     scoreBadge(team: .red, score: engine.redScore)
-                    Text(formattedTime(ms: engine.timeRemainingMs))
+                    Text(formattedTime(seconds: engine.displaySeconds))
                         .font(.system(size: 18, weight: .heavy, design: .monospaced))
                         .foregroundColor(.white)
                         .padding(.horizontal, 14).padding(.vertical, 6)
@@ -332,6 +332,29 @@ struct GameView: View {
                 matchOverOverlay
             }
         }
+        .onAppear {
+            if let policy = router.cachedRLPolicy {
+                engine.expertAgentFactory = { RLAgent(policy: policy) }
+            }
+            engine.settings = router.settings
+            engine.startMatch()
+            // Create the scene once, now that the engine roster exists, so the
+            // scene's didMove builds the correct nodes.
+            if sceneRef == nil { sceneRef = makeScene() }
+        }
+        .onDisappear { engine.stop() }
+        .onChange(of: scenePhase) { phase in
+            // Pause the match while backgrounded; resume cleanly on return so
+            // the clock doesn't jump and the sim doesn't run unseen.
+            switch phase {
+            case .active:
+                if engine.isRunning && !engine.matchOver { engine.resume() }
+            case .inactive, .background:
+                engine.pause()
+            @unknown default:
+                break
+            }
+        }
     }
 
     private func makeScene() -> GameScene {
@@ -353,9 +376,8 @@ struct GameView: View {
             .background(Circle().fill(Color.black.opacity(0.45)))
     }
 
-    private func formattedTime(ms: Double) -> String {
-        let s = Int(ms / 1000)
-        return String(format: "%d:%02d", s / 60, s % 60)
+    private func formattedTime(seconds: Int) -> String {
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
     private var matchOverOverlay: some View {

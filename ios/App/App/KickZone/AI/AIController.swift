@@ -36,7 +36,7 @@ final class AIController: AgentController {
                 dtMs: Double, dtRatio: CGFloat) -> KickIntent {
         decisionTimerMs -= dtMs
         if decisionTimerMs > 0 {
-            moveToTarget(player: player)
+            moveToTarget(player: player, dtRatio: dtRatio)
             return KickIntent(kick: false, chargeRatio: 0.3)
         }
         decisionTimerMs = reactionTimeMs + Double.random(in: 0..<reactionJitterMs)
@@ -62,7 +62,7 @@ final class AIController: AgentController {
             let r = decideKick(player: player, ball: ball, field: field, opponents: opponents)
             kick = r.kick; charge = r.chargeRatio
         }
-        moveToTarget(player: player)
+        moveToTarget(player: player, dtRatio: dtRatio)
         return KickIntent(kick: kick, chargeRatio: charge)
     }
 
@@ -312,17 +312,19 @@ final class AIController: AgentController {
         targetY = max(field.y + 25, min(field.y + field.height - 25, targetY))
     }
 
-    private func moveToTarget(player: Player) {
+    private func moveToTarget(player: Player, dtRatio: CGFloat) {
         let dx = targetX - player.pos.x
         let dy = targetY - player.pos.y
         let d = (dx * dx + dy * dy).squareRoot()
         if d > 3 {
             let n = Vec2(dx / d, dy / d)
             let speed = min(d / moveDiv, 1)
-            // applyInput uses dtRatio internally; we pass 1.0 here because the
-            // game engine multiplies by dtRatio when running this controller's
-            // moves (matches how the JS version does it).
-            player.applyInput(Vec2(n.x * speed, n.y * speed), dtRatio: 1.0)
+            // Scale acceleration by the real dtRatio so AI movement is
+            // frame-rate independent — matching the human-input path and the
+            // JS reference (shared/ai.js, where applyInput reads Physics.dtRatio
+            // internally). Passing 1.0 made the AI accelerate too hard on 120Hz
+            // displays and too softly on frame drops.
+            player.applyInput(Vec2(n.x * speed, n.y * speed), dtRatio: dtRatio)
         }
     }
 }
