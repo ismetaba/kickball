@@ -112,6 +112,14 @@ final class GameScene: SKScene {
         }
     }
 
+    // Tear down the old player nodes and build a fresh set (used on rematch,
+    // when the engine's Player instances have been replaced).
+    private func rebuildPlayers(_ players: [Player]) {
+        for n in playerNodes.values { n.removeFromParent() }
+        playerNodes.removeAll()
+        buildPlayers(players)
+    }
+
     private func playerNode(for p: Player) -> SKNode {
         let group = SKNode()
         group.zPosition = 4
@@ -149,6 +157,14 @@ final class GameScene: SKScene {
     // MARK: - Per-frame render
 
     private func renderFrame(engine: GameEngine) {
+        // A rematch replaces every Player with a new instance. Our identity-keyed
+        // node map would then miss them all (players frozen) until the nodes are
+        // rebuilt. Detect the swap cheaply (the first roster member is no longer
+        // a known key) and rebuild.
+        if let first = engine.players.first, playerNodes[first] == nil {
+            rebuildPlayers(engine.players)
+        }
+
         ballNode.position = CGPoint(x: engine.ball.pos.x, y: engine.ball.pos.y)
 
         for p in engine.players {
