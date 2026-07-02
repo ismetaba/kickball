@@ -82,6 +82,9 @@ class P2PNetwork {
         this._pingTimestamps = new Map(); // peerId -> last ping send time
         this._adaptiveInputDelay = 3;    // current delay in ticks (2-5 range)
         this._rttPingInterval = null;
+
+        // Outbound signaling queue while the socket is down/reconnecting
+        this._sendQueue = [];
     }
 
     // --- WebSocket to signaling server ---
@@ -97,6 +100,7 @@ class P2PNetwork {
 
         this.ws.onopen = () => {
             this.isOnline = true;
+            this._flushSendQueue();
             if (this.onConnected) this.onConnected();
         };
 
@@ -128,6 +132,7 @@ class P2PNetwork {
     disconnect() {
         this._intentionalClose = true;
         this.stopRTTMeasurement();
+        this._sendQueue = [];
         this._closeAllPeers();
         if (this.ws) {
             this.ws.close();
@@ -139,6 +144,19 @@ class P2PNetwork {
     _send(msg) {
         if (this.ws && this.ws.readyState === 1) {
             this.ws.send(JSON.stringify(msg));
+            return;
+        }
+        // Socket down or reconnecting: queue instead of silently dropping —
+        // lost ICE candidates or relayed lockstep inputs wedge the match.
+        if (this._sendQueue.length < 200) this._sendQueue.push(msg);
+    }
+
+    _flushSendQueue() {
+        if (!this.ws || this.ws.readyState !== 1) return;
+        const queued = this._sendQueue;
+        this._sendQueue = [];
+        for (const msg of queued) {
+            try { this.ws.send(JSON.stringify(msg)); } catch (e) {}
         }
     }
 
@@ -531,25 +549,16 @@ class P2PNetwork {
     }
 
     broadcastGoal(data) {
-        const msg = JSON.stringify({ t: 'goal', d: data });
-        let sent = false;
-        for (const [, dc] of this.dataChannels) {
-            if (dc.readyState === 'open') {
-                try { dc.send(msg); sent = true; } catch (e) {}
-            }
-        }
-        if (!sent) this._send({ t: 'p2p_relay_goal', d: data });
+        const delivered = this._broadcastToPeers(JSON.stringify({ t: 'goal', d: data }));
+        if (delivered < this.peerConnections.size) this._send({ t: 'p2p_relay_goal', d: data });
     }
 
     broadcastMatchEnd(data) {
-        const msg = JSON.stringify({ t: 'match_end', d: data });
-        let sent = false;
-        for (const [, dc] of this.dataChannels) {
-            if (dc.readyState === 'open') {
-                try { dc.send(msg); sent = true; } catch (e) {}
-            }
-        }
-        if (!sent) this._send({ t: 'p2p_relay_end', d: data });
+        const delivered = this._broadcastToPeers(JSON.stringify({ t: 'match_end', d: data }));
+        if (delivered < this.peerConnections.size) this._send({ t: 'p2p_relay_end', d: data });
+        // Always tell the server the match is over so the room accepts joins
+        // again (room.started) regardless of how match_end reached the peers.
+        this._send({ t: 'p2p_match_ended', d: {} });
     }
 
     // --- Lockstep: send local input for a future tick (guest -> host) ---
@@ -575,33 +584,38 @@ class P2PNetwork {
         if (!sent) this._send({ t: 'p2p_relay_input', d: payload });
     }
 
-    // Host: broadcast confirmed inputs for a tick to all peers
-    broadcastConfirmedInputs(tick, allInputs) {
-        const msg = JSON.stringify({ t: 'ci', d: { tk: tick, inputs: allInputs } });
-        let sent = false;
+    // Host: count of peers reached over open data channels vs. total peers.
+    // The relay fallback must fire when ANY peer lacks an open channel — not
+    // only when all of them do — or a single DC-less guest silently starves,
+    // stalls, and then wedges the whole lockstep room.
+    _broadcastToPeers(msg) {
+        let delivered = 0;
         for (const [, dc] of this.dataChannels) {
             if (dc.readyState === 'open') {
-                try { dc.send(msg); sent = true; } catch(e) {}
+                try { dc.send(msg); delivered++; } catch (e) {}
             }
         }
+        return delivered;
+    }
+
+    // Host: broadcast confirmed inputs for a tick to all peers
+    broadcastConfirmedInputs(tick, allInputs) {
+        const delivered = this._broadcastToPeers(JSON.stringify({ t: 'ci', d: { tk: tick, inputs: allInputs } }));
         // Dedicated relay type — the server forwards it to guests as 'ci'.
-        // (Reusing 'p2p_relay_state' misrouted these into the legacy snapshot
-        // handler and broke lockstep whenever the data channel wasn't open.)
-        if (!sent) this._send({ t: 'p2p_relay_ci', d: { tk: tick, inputs: allInputs } });
+        // Guests that also got the DC copy dedup via the tick-keyed buffer.
+        if (delivered < this.peerConnections.size) {
+            this._send({ t: 'p2p_relay_ci', d: { tk: tick, inputs: allInputs } });
+        }
     }
 
     // Host: broadcast checksum + full state for resync
     broadcastChecksum(tick, hash, fullState) {
-        const msg = JSON.stringify({ t: 'cs', d: { tk: tick, h: hash, fs: fullState } });
-        let sent = false;
-        for (const [, dc] of this.dataChannels) {
-            if (dc.readyState === 'open') {
-                try { dc.send(msg); sent = true; } catch(e) {}
-            }
-        }
+        const delivered = this._broadcastToPeers(JSON.stringify({ t: 'cs', d: { tk: tick, h: hash, fs: fullState } }));
         // Without this fallback, relay-mode guests could desync permanently:
         // they would never receive the periodic authoritative state.
-        if (!sent) this._send({ t: 'p2p_relay_cs', d: { tk: tick, h: hash, fs: fullState } });
+        if (delivered < this.peerConnections.size) {
+            this._send({ t: 'p2p_relay_cs', d: { tk: tick, h: hash, fs: fullState } });
+        }
     }
 
     // --- Adaptive Input Delay: RTT measurement between host and peers ---

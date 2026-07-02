@@ -135,6 +135,66 @@ test('joining a full or started P2P room is rejected', () => {
     assert.ok(g3.last(MSG.ERROR), 'joining after match start rejected');
 });
 
+test('duplicate start_p2p_match is ignored (no re-mint of the match seed)', () => {
+    const { rm, hostWs, guestWs } = setupP2PRoom();
+
+    rm.handleMessage('host', hostWs, { t: MSG.START_P2P_MATCH, d: {} });
+    const firstSeed = guestWs.last(MSG.MATCH_STARTING).d.matchSeed;
+    const startCount = guestWs.sent.filter(m => m.t === MSG.MATCH_STARTING).length;
+
+    rm.handleMessage('host', hostWs, { t: MSG.START_P2P_MATCH, d: {} });
+
+    assert.equal(
+        guestWs.sent.filter(m => m.t === MSG.MATCH_STARTING).length,
+        startCount,
+        'no second match_starting broadcast'
+    );
+    assert.equal(guestWs.last(MSG.MATCH_STARTING).d.matchSeed, firstSeed);
+});
+
+test('p2p_match_ended reopens the room for joins', () => {
+    const { rm, hostWs, code } = setupP2PRoom();
+    rm.handleMessage('host', hostWs, { t: MSG.START_P2P_MATCH, d: {} });
+    assert.equal(rm.p2pRooms.get(code).started, true);
+
+    rm.handleMessage('host', hostWs, { t: MSG.P2P_MATCH_ENDED, d: {} });
+    assert.equal(rm.p2pRooms.get(code).started, false);
+
+    const g2 = fakeWs();
+    rm.handleMessage('g2', g2, { t: MSG.JOIN_P2P_ROOM, d: { roomCode: code, name: 'G2' } });
+    assert.ok(g2.last(MSG.ROOM_JOINED), 'new guest can join after the match ended');
+});
+
+test('P2P teamSize shrink below occupancy and invalid team switches are rejected', () => {
+    const { rm, hostWs, guestWs, code } = setupP2PRoom();
+    const room = rm.p2pRooms.get(code);
+
+    // Guest was auto-balanced to blue; move them to red — now red has 2.
+    rm.handleMessage('guest', guestWs, { t: MSG.SWITCH_TEAM, d: { team: 'red' } });
+    assert.equal(room.peers.get('guest').team, 'red');
+
+    // Arbitrary team strings are ignored.
+    rm.handleMessage('guest', guestWs, { t: MSG.SWITCH_TEAM, d: { team: 'purple' } });
+    assert.equal(room.peers.get('guest').team, 'red');
+
+    // teamSize 1 would strand one of the two red players.
+    hostWs.sent.length = 0;
+    rm.handleMessage('host', hostWs, { t: MSG.UPDATE_SETTINGS, d: { teamSize: 1 } });
+    assert.equal(room.settings.teamSize, 2, 'shrink rejected');
+    assert.ok(hostWs.last(MSG.ERROR), 'host told why');
+});
+
+test('duplicate join_p2p_room from the host answers idempotently without corrupting peers', () => {
+    const { rm, hostWs, code } = setupP2PRoom();
+    const room = rm.p2pRooms.get(code);
+
+    rm.handleMessage('host', hostWs, { t: MSG.JOIN_P2P_ROOM, d: { roomCode: code, name: 'Host' } });
+
+    assert.equal(room.peers.has('host'), false, 'host never inserted into peers');
+    assert.ok(rm.p2pRooms.has(code), 'room still alive');
+    assert.ok(hostWs.last(MSG.ROOM_JOINED), 'idempotent room_joined reply');
+});
+
 test('stale-room sweep reaps a P2P room whose host socket is dead', () => {
     const { rm, guestWs, code } = setupP2PRoom();
 

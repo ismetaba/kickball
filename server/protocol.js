@@ -46,6 +46,8 @@ const MSG = {
     // Forwarded to guests as 'ci'/'cs', matching the data-channel message types.
     P2P_RELAY_CI: 'p2p_relay_ci',
     P2P_RELAY_CS: 'p2p_relay_cs',
+    // Host -> server only: reopen the room for joins after the match ends.
+    P2P_MATCH_ENDED: 'p2p_match_ended',
 };
 
 const ROOM_STATE = {

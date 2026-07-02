@@ -84,6 +84,10 @@ class Game {
         this._lockstepStallWarned = false;
         this._endMatchAtTick = null;
         this._pendingChecksums = null;
+        this._recentChecksums = null;   // guest: own hash per checksum tick
+        this._ciHistory = null;         // guest: recent confirmed inputs (rollback)
+        this._replayUntil = 0;          // rollback replay boundary
+        this._onLockstepStall = null;   // session-layer stall handler
 
         // Online multiplayer state
         this.isOnline = false;
@@ -371,6 +375,13 @@ class Game {
         this.powerUpManager = new PowerUpManager(this.field);
         this.powerUpManager.enabled = this.settings.powerups;
 
+        // Offline matches: fresh random seed so AI jitter / power-up spawns
+        // vary between matches. Lockstep matches seed from the server-minted
+        // matchSeed BEFORE calling startMatch, so leave that seed untouched.
+        if (!this.isLockstep) {
+            this.rng.seed((Math.random() * 0x7fffffff) | 0 || 1);
+        }
+
         this.redScore = 0;
         this.blueScore = 0;
         this.timeRemaining = this.settings.duration * 1000;
@@ -396,6 +407,7 @@ class Game {
         this._endMatchAtTick = null;
         this._lockstepWaitStart = null;
         this._lockstepStallWarned = false;
+        this._replayUntil = 0;
         this._goalNotifTimer = null;
         this._powerUpNotifTimer = null;
 
@@ -487,7 +499,11 @@ class Game {
                     let steps = 0;
                     while (this._accumulator >= TICK_MS && steps < 5 && this.isRunning) {
                         if (!this._lockstepCanAdvance()) break;
-                        if (this._applyPeerInputs) this._applyPeerInputs();
+                        // During a rollback replay the inputs for these ticks
+                        // were already sent — re-scheduling would double-send.
+                        if (this.tickCount >= this._replayUntil && this._applyPeerInputs) {
+                            this._applyPeerInputs();
+                        }
                         this._lockstepTick();
                         this._accumulator -= TICK_MS;
                         steps++;
@@ -557,9 +573,20 @@ class Game {
         // silently diverge the simulations. Just wait, and surface long stalls.
         if (!this._lockstepWaitStart) {
             this._lockstepWaitStart = performance.now();
-        } else if (!this._lockstepStallWarned && performance.now() - this._lockstepWaitStart > 2000) {
-            this._lockstepStallWarned = true;
-            console.warn(`Lockstep stalled >2s waiting for inputs of tick ${this.tickCount}`);
+        } else {
+            const waited = performance.now() - this._lockstepWaitStart;
+            if (!this._lockstepStallWarned && waited > 2000) {
+                this._lockstepStallWarned = true;
+                console.warn(`Lockstep stalled >2s waiting for inputs of tick ${this.tickCount}`);
+            }
+            // Unrecoverable stall (peer unresponsive but socket still "alive"):
+            // let the session layer decide — the host kicks the silent peer,
+            // guests surface it to the user. Reset the timer so it can refire.
+            if (waited > 15000 && this._onLockstepStall) {
+                this._lockstepWaitStart = performance.now();
+                this._lockstepStallWarned = false;
+                this._onLockstepStall(this.tickCount);
+            }
         }
         return false;
     }
@@ -648,6 +675,15 @@ class Game {
                 // Include full state so guests can auto-resync on mismatch
                 const fullState = this._serializeFullState();
                 this.p2p.broadcastChecksum(this.tickCount, hash, fullState);
+            } else if (this._recentChecksums) {
+                // Guest: record own hash at the same cadence, so a host
+                // checksum that arrives AFTER we passed its tick (the common
+                // low-latency case) can still be compared and trigger a
+                // rollback instead of being dropped as stale.
+                this._recentChecksums.set(this.tickCount, this._computeChecksum());
+                while (this._recentChecksums.size > 10) {
+                    this._recentChecksums.delete(this._recentChecksums.keys().next().value);
+                }
             }
         }
 
@@ -677,6 +713,25 @@ class Game {
             console.warn(`Lockstep desync at tick ${csData.tk}: local=${localHash}, host=${csData.h} — resyncing`);
             if (csData.fs) this._applyFullState(csData.fs);
         }
+    }
+
+    // Guest: the host's checksum was for a tick we already executed. Rewind to
+    // the host's authoritative state at that tick and replay the recorded
+    // confirmed inputs back to the present. Returns false when the input
+    // history no longer covers the window (rollback impossible).
+    _rollbackToChecksum(csData) {
+        const presentTick = this.tickCount;
+        if (!this._ciHistory || !csData.fs) return false;
+        for (let t = csData.tk; t < presentTick; t++) {
+            if (!this._ciHistory.has(t)) return false;
+        }
+        this._applyFullState(csData.fs);
+        this.tickCount = csData.tk;
+        for (let t = csData.tk; t < presentTick; t++) {
+            this._lockstepInputBuffer.set(t, this._ciHistory.get(t));
+        }
+        this._replayUntil = presentTick;
+        return true;
     }
 
     _computeChecksum() {
@@ -710,6 +765,8 @@ class Game {
         add(this.timeRemaining);
         add(this.kickoffActive ? 1 : 0);
         add(this.suddenDeath ? 1 : 0);
+        add(this.momentum.red * 100); add(this.momentum.blue * 100);
+        add(this.slowMoTimer);
         add(this.rng.s);
         return h;
     }
@@ -725,11 +782,14 @@ class Game {
                 slotCtrl.push([slotIdx, this.players.indexOf(player)]);
             }
         }
+        // Full precision throughout: the host checksums its LIVE state, so a
+        // guest that applies a rounded copy would mismatch the very next
+        // checksum and resync forever.
         const players = this.players.map(p => ({
-            x: Math.round(p.x * 100) / 100,
-            y: Math.round(p.y * 100) / 100,
-            vx: Math.round(p.vx * 100) / 100,
-            vy: Math.round(p.vy * 100) / 100,
+            x: p.x,
+            y: p.y,
+            vx: p.vx,
+            vy: p.vy,
             st: p.stunTimer || 0,
             pc: p.pullCooldown || 0,
             kc: p.kickCooldown || 0,
@@ -743,11 +803,11 @@ class Game {
         const b = this.ball;
         return {
             p: players,
-            bx: Math.round(b.x * 100) / 100,
-            by: Math.round(b.y * 100) / 100,
-            bvx: Math.round(b.vx * 100) / 100,
-            bvy: Math.round(b.vy * 100) / 100,
-            bsp: Math.round(b.spin * 1000) / 1000,
+            bx: b.x,
+            by: b.y,
+            bvx: b.vx,
+            bvy: b.vy,
+            bsp: b.spin,
             bsk: b.superKick,
             bst: b.superTarget,
             bfl: b.fireLevel,
@@ -767,6 +827,13 @@ class Game {
             sdt: this.suddenDeathTimer,
             gs: this.isGoalScored ? 1 : 0,
             gt: this.goalTimer,
+            mor: this.momentum.red,
+            mob: this.momentum.blue,
+            ts: this.timeScale,
+            sm: this.slowMoTimer,
+            blk: this.ball.lastKickedBy ? this.players.indexOf(this.ball.lastKickedBy) : -1,
+            es: this._endMatchScheduled ? 1 : 0,
+            emt: this._endMatchAtTick,
             pus: this.powerUpManager
                 ? this.powerUpManager.powerUps.map(pu => ({ x: pu.x, y: pu.y, t: pu.type.id }))
                 : [],
@@ -824,6 +891,15 @@ class Game {
         if (state.sdt !== undefined) this.suddenDeathTimer = state.sdt;
         if (state.gs !== undefined) this.isGoalScored = state.gs === 1;
         if (state.gt !== undefined) this.goalTimer = state.gt;
+        if (state.mor !== undefined) this.momentum.red = state.mor;
+        if (state.mob !== undefined) this.momentum.blue = state.mob;
+        if (state.ts !== undefined) this.timeScale = state.ts;
+        if (state.sm !== undefined) this.slowMoTimer = state.sm;
+        if (state.blk !== undefined) {
+            this.ball.lastKickedBy = state.blk >= 0 ? this.players[state.blk] || null : null;
+        }
+        if (state.es !== undefined) this._endMatchScheduled = state.es === 1;
+        if (state.emt !== undefined) this._endMatchAtTick = state.emt;
         if (state.pus && this.powerUpManager) {
             this.powerUpManager.powerUps = state.pus.map(s => {
                 const type = this.powerUpManager.types.find(t => t.id === s.t);
@@ -1394,8 +1470,10 @@ class Game {
 
             }
 
-            // Auto kick on contact: if player is charging (any amount) and touches ball, kick with current charge
-            if (collided && p === this.humanPlayer && this.input.kickCharging) {
+            // Auto kick on contact: if player is charging (any amount) and touches ball, kick with current charge.
+            // Skipped in lockstep: this reads RAW local input outside the
+            // confirmed-input stream, which no other peer sees — instant desync.
+            if (collided && !this.isLockstep && p === this.humanPlayer && this.input.kickCharging) {
                 const cr = p.kickChargeRatio || 0.1;
                 p.kick(this.ball, cr);
                 this.stats.shots.red++;
@@ -1911,6 +1989,9 @@ class Game {
         }
         nearest.isHuman = true;
         this.aiControllers = this.aiControllers.filter(c => c.player !== nearest);
+        // Keep the canonical player-index order: the lockstep RNG is consumed
+        // in aiControllers order, so every peer must iterate identically.
+        this.aiControllers.sort((a, b) => this.players.indexOf(a.player) - this.players.indexOf(b.player));
         return nearest;
     }
 
