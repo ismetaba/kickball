@@ -42,6 +42,10 @@ const MSG = {
     P2P_RELAY_GOAL: 'p2p_relay_goal',
     P2P_RELAY_END: 'p2p_relay_end',
     P2P_RELAY_INPUT: 'p2p_relay_input',
+    // Lockstep relay fallbacks (host -> guests when data channels aren't open).
+    // Forwarded to guests as 'ci'/'cs', matching the data-channel message types.
+    P2P_RELAY_CI: 'p2p_relay_ci',
+    P2P_RELAY_CS: 'p2p_relay_cs',
 };
 
 const ROOM_STATE = {

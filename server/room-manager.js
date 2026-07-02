@@ -62,6 +62,8 @@ class RoomManager {
             case MSG.P2P_RELAY_STATE:
             case MSG.P2P_RELAY_GOAL:
             case MSG.P2P_RELAY_END:
+            case MSG.P2P_RELAY_CI:
+            case MSG.P2P_RELAY_CS:
                 this._relayP2PData(playerId, msg);
                 break;
             case MSG.P2P_RELAY_INPUT:
@@ -164,6 +166,13 @@ class RoomManager {
     _leaveRoom(playerId) {
         const roomCode = this.playerRooms.get(playerId);
         if (!roomCode) return;
+
+        // P2P membership is stored as 'p2p:CODE' — route it to the P2P
+        // teardown (previously this silently orphaned the room forever).
+        if (roomCode.startsWith('p2p:')) {
+            this._leaveP2PRoom(playerId);
+            return;
+        }
 
         const room = this.rooms.get(roomCode);
         if (room) {
@@ -347,6 +356,26 @@ class RoomManager {
                 this._cleanupRoom(code);
             }
         }
+
+        // P2P rooms: normally torn down via leave/disconnect, but a socket that
+        // dies without a close event (zombie) or a missed teardown would leak
+        // the room and its ws references forever. Sweep rooms whose host socket
+        // is no longer open, and apply a generous absolute age cap.
+        for (const [code, room] of this.p2pRooms) {
+            const hostAlive = room.hostWs && room.hostWs.readyState === 1;
+            const expired = now - room.createdAt > 24 * 60 * 60 * 1000;
+            if (hostAlive && !expired) continue;
+            for (const [peerId, peer] of room.peers) {
+                this._sendTo(peer.ws, MSG.P2P_PEER_LEFT, { peerId: room.hostId, hostLeft: true });
+                if (this.playerRooms.get(peerId) === 'p2p:' + code) {
+                    this.playerRooms.delete(peerId);
+                }
+            }
+            if (this.playerRooms.get(room.hostId) === 'p2p:' + code) {
+                this.playerRooms.delete(room.hostId);
+            }
+            this.p2pRooms.delete(code);
+        }
     }
 
     _generateCode() {
@@ -357,7 +386,9 @@ class RoomManager {
             for (let i = 0; i < 4; i++) {
                 code += chars[Math.floor(Math.random() * chars.length)];
             }
-        } while (this.rooms.has(code));
+            // Must be unique across BOTH registries: _joinRoom routes colliding
+            // codes to the P2P room first, which would shadow this room.
+        } while (this.rooms.has(code) || this.p2pRooms.has(code));
         return code;
     }
 
@@ -373,11 +404,25 @@ class RoomManager {
         let idx = 0;
         for (const s of slots) { s.index = idx++; }
 
+        // Lockstep determinism: the server mints the shared RNG seed and echoes
+        // the host's input delay so EVERY peer (host included) starts the match
+        // from identical parameters in the same message. (Previously the seed
+        // travelled host->DC->guest and always lost the race against this
+        // broadcast, so guests silently ran a different RNG stream.)
+        const matchSeed = (Math.floor(Math.random() * 0x7fffffff)) || 1;
+        const inputDelay = (Number.isInteger(data?.inputDelay) && data.inputDelay >= 2 && data.inputDelay <= 10)
+            ? data.inputDelay
+            : 3;
+
+        room.started = true;
+
         const matchData = {
             settings: room.settings,
             slots,
             isP2P: true,
             hostId: playerId,
+            matchSeed,
+            inputDelay,
         };
 
         // Tell everyone including host
@@ -432,6 +477,22 @@ class RoomManager {
             return;
         }
 
+        if (room.started) {
+            this._sendTo(ws, MSG.ERROR, { message: 'Match already in progress' });
+            return;
+        }
+
+        const maxPlayers = ((room.settings && room.settings.teamSize) || 2) * 2;
+        if (1 + room.peers.size >= maxPlayers) {
+            this._sendTo(ws, MSG.ERROR, { message: 'Room is full' });
+            return;
+        }
+
+        // Leave any OTHER room the player is still in. (Skip when already in
+        // this room — a duplicate join from the host would otherwise destroy it.)
+        const currentRef = this.playerRooms.get(playerId);
+        if (currentRef && currentRef !== 'p2p:' + code) this._leaveRoom(playerId);
+
         // Pick balanced team
         let red = 1, blue = 0; // host is red
         for (const [, p] of room.peers) {
@@ -480,6 +541,8 @@ class RoomManager {
             'p2p_relay_state': 'state',
             'p2p_relay_goal': 'goal',
             'p2p_relay_end': 'match_end',
+            'p2p_relay_ci': 'ci',
+            'p2p_relay_cs': 'cs',
         };
         const clientType = typeMap[msg.t] || msg.t;
 
