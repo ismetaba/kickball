@@ -189,6 +189,9 @@ class RoomManager {
             return;
         }
 
+        // Free the room + player mappings promptly when the match ends
+        // naturally, instead of waiting for the 60s stale-room sweep.
+        room.onFinished = () => this._cleanupRoom(roomCode);
         room.startMatch();
     }
 
@@ -218,24 +221,26 @@ class RoomManager {
         room.switchTeam(playerId, data?.team);
     }
 
-    _quickMatch(playerId, ws, data) {
+    _quickMatch(playerId, ws, data = {}) {
         this._leaveRoom(playerId);
-        this.playerWs.set(playerId, ws);
 
         const name = data?.name || 'Player';
 
         // Find an open waiting room that isn't full
         for (const [roomCode, room] of this.rooms) {
             if (room.state === ROOM_STATE.WAITING && room.playerCount < room.maxPlayers) {
-                // Join this room
+                // Join this room. addPlayer can still refuse (full/started); if it
+                // does, fall through to the next candidate instead of leaving the
+                // player with a phantom room mapping.
                 const team = this._getBalancedTeam(room);
-                room.addPlayer(playerId, ws, name, team);
+                if (!room.addPlayer(playerId, ws, name, team)) continue;
                 this.playerRooms.set(playerId, roomCode);
                 this._sendTo(ws, MSG.ROOM_JOINED, {
                     roomCode,
                     playerId,
                     slots: room.getSlotInfo(),
                     settings: room.settings,
+                    yourSlot: null,
                     isHost: false,
                 });
                 return;
@@ -255,7 +260,7 @@ class RoomManager {
         return red <= blue ? 'red' : 'blue';
     }
 
-    _updateSettings(playerId, data) {
+    _updateSettings(playerId, data = {}) {
         const ref = this.playerRooms.get(playerId);
         if (!ref) return;
 
@@ -264,7 +269,7 @@ class RoomManager {
             const code = ref.slice(4);
             const p2pRoom = this.p2pRooms.get(code);
             if (!p2pRoom || p2pRoom.hostId !== playerId) return;
-            if (data.teamSize && [1, 2, 3, 4].includes(data.teamSize)) {
+            if (data?.teamSize && [1, 2, 3, 4].includes(data.teamSize)) {
                 p2pRoom.settings.teamSize = data.teamSize;
             }
             this._broadcastP2PRoom(code, p2pRoom);
@@ -276,7 +281,20 @@ class RoomManager {
         if (room.state !== ROOM_STATE.WAITING) return;
 
         // Update allowed settings
-        if (data.teamSize && [1, 2, 3, 4].includes(data.teamSize)) {
+        if (data?.teamSize && [1, 2, 3, 4].includes(data.teamSize)) {
+            // Reject a teamSize that no longer fits the players already in the
+            // room. Each team holds teamSize players, so shrinking below the
+            // current per-team occupancy would strand the extra players with no
+            // simulation slot (invisible, uncontrollable) once the match starts.
+            let redCount = 0, blueCount = 0;
+            for (const [, p] of room.players) {
+                if (p.team === 'red') redCount++; else blueCount++;
+            }
+            if (data.teamSize < Math.max(redCount, blueCount)) {
+                const ws = this.playerWs.get(playerId);
+                if (ws) this._sendTo(ws, MSG.ERROR, { message: 'Team size too small for current players' });
+                return;
+            }
             room.settings.teamSize = data.teamSize;
         }
         room._broadcastRoomUpdate();
@@ -306,18 +324,27 @@ class RoomManager {
         return lobbies;
     }
 
+    // Remove a room and clear its players' room mappings. Used both by the
+    // stale-room sweep and immediately when a match ends naturally.
+    _cleanupRoom(roomCode) {
+        const room = this.rooms.get(roomCode);
+        if (!room) return;
+        if (room.simulation) room.simulation.stop();
+        for (const [playerId] of room.players) {
+            if (this.playerRooms.get(playerId) === roomCode) {
+                this.playerRooms.delete(playerId);
+            }
+        }
+        this.rooms.delete(roomCode);
+    }
+
     cleanupStaleRooms() {
         const now = Date.now();
         for (const [code, room] of this.rooms) {
             // Remove rooms that have been waiting too long or are finished
             if (room.state === ROOM_STATE.FINISHED ||
                 (room.state === ROOM_STATE.WAITING && now - room.createdAt > 10 * 60 * 1000)) {
-                if (room.simulation) room.simulation.stop();
-                // Clean up player mappings
-                for (const [playerId] of room.players) {
-                    this.playerRooms.delete(playerId);
-                }
-                this.rooms.delete(code);
+                this._cleanupRoom(code);
             }
         }
     }

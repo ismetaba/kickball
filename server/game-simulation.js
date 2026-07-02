@@ -44,6 +44,9 @@ class GameSimulation {
     constructor(settings) {
         this.settings = settings;
         this.tickRate = GameConstants.TICK_RATE;
+        // How many ticks elapse between state sends (cached; both inputs are
+        // constant for the life of the simulation).
+        this._ticksPerState = Math.max(1, Math.round(this.tickRate / GameConstants.STATE_SEND_RATE));
         this.tickNumber = 0;
         this.tickInterval = null;
 
@@ -118,9 +121,6 @@ class GameSimulation {
         // Power-ups
         this.powerUpManager = new PowerUpManager(this.field);
         this.powerUpManager.enabled = settings.powerups !== false;
-
-        // Event buffer (flushed each state send)
-        this.pendingEvents = [];
 
         // Callbacks
         this.onStateUpdate = null; // called at STATE_SEND_RATE
@@ -265,7 +265,33 @@ class GameSimulation {
 
     start() {
         this.isRunning = true;
-        this.tickInterval = setInterval(() => this.tick(), 1000 / this.tickRate);
+        // Fixed-timestep driver: each setInterval fire advances the sim by as
+        // many whole TICK_MS steps as real time has actually elapsed, so the
+        // match clock tracks wall time despite setInterval jitter/drift and the
+        // snapshot cadence stays smooth for clients. tick() always steps exactly
+        // TICK_MS, so per-step physics determinism is preserved.
+        this._lastTickTime = Date.now();
+        this._tickAccumulator = 0;
+        this.tickInterval = setInterval(() => this._drive(), 1000 / this.tickRate);
+    }
+
+    _drive() {
+        if (!this.isRunning) return;
+        const now = Date.now();
+        let elapsed = now - this._lastTickTime;
+        this._lastTickTime = now;
+        // Clamp accumulated time so a long stall (GC, overloaded host) cannot
+        // trigger a spiral-of-death catch-up; drop the excess instead.
+        const maxStep = GameConstants.TICK_MS * 5;
+        if (elapsed > maxStep) elapsed = maxStep;
+        this._tickAccumulator += elapsed;
+        let steps = 0;
+        while (this._tickAccumulator >= GameConstants.TICK_MS && steps < 5) {
+            this.tick();
+            this._tickAccumulator -= GameConstants.TICK_MS;
+            steps++;
+            if (!this.isRunning) break; // tick() may have ended the match
+        }
     }
 
     stop() {
@@ -551,7 +577,8 @@ class GameSimulation {
 
             // Auto kick on contact for human players charging
             if (collided) {
-                const slot = (() => { const _s = this._playerSlotMap.get(p); return _s && _s.isHuman ? _s : null; })();
+                const _s = this._playerSlotMap.get(p);
+                const slot = _s && _s.isHuman ? _s : null;
                 if (slot) {
                     const input = this._inputQueues[slot.index];
                     if (input.kickCharging) {
@@ -703,9 +730,8 @@ class GameSimulation {
     }
 
     _maybeSendState() {
-        // Send state at STATE_SEND_RATE (every N ticks)
-        const ticksPerState = Math.round(this.tickRate / GameConstants.STATE_SEND_RATE);
-        if (this.tickNumber % ticksPerState === 0 && this.onStateUpdate) {
+        // Send state at STATE_SEND_RATE (every _ticksPerState ticks)
+        if (this.tickNumber % this._ticksPerState === 0 && this.onStateUpdate) {
             this.onStateUpdate(this.getStateSnapshot());
         }
     }
@@ -849,7 +875,8 @@ class GameSimulation {
     }
 
     _emitEvent(type, data) {
-        this.pendingEvents.push({ type, data });
+        // Events are fire-and-forget: dispatched immediately to the room, which
+        // broadcasts them to clients. No buffering.
         if (this.onEvent) {
             this.onEvent({ type, data });
         }

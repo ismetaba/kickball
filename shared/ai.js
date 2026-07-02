@@ -447,9 +447,13 @@ class AIController {
         const dist = Math.sqrt(dx * dx + dy * dy);
 
         if (dist > 3) {
-            const n = Physics.normalize(dx, dy);
+            // Inline the unit vector (reusing `dist`) instead of calling
+            // Physics.normalize, which allocates a fresh {x,y} object on this
+            // per-tick hot path (one AI moves every tick). dist > 3 guarantees
+            // a non-zero divisor, matching normalize's len === 0 guard.
+            const inv = 1 / dist;
             const speed = Math.min(dist / this.moveDiv, 1);
-            player.applyInput(n.x * speed, n.y * speed);
+            player.applyInput(dx * inv * speed, dy * inv * speed);
         }
     }
 }
