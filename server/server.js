@@ -50,6 +50,13 @@ const wss = new WebSocketServer({
     maxPayload: 64 * 1024,
     perMessageDeflate: {
         zlibDeflateOptions: { level: 1 }, // fastest compression
+        // Cap the per-connection zlib sliding window. The default (15) reserves
+        // ~300 KB+ of deflate/inflate buffers per socket; 13 keeps the strong
+        // ratio on our small repetitive state frames while bounding memory so
+        // many concurrent rooms stay cheap.
+        zlibInflateOptions: { windowBits: 13 },
+        serverMaxWindowBits: 13,
+        clientMaxWindowBits: 13,
         threshold: 64, // only compress messages > 64 bytes
         concurrencyLimit: 4,
     },
