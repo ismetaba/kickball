@@ -84,7 +84,14 @@ class AIController {
         return false;
     }
 
-    update(player, ball, field, teammates, opponents, dt) {
+    // Lockstep multiplayer passes a shared seeded rng so AI decisions are
+    // identical on every peer; offline/server callers omit it.
+    _random() {
+        return this._rng ? this._rng.next() : Math.random();
+    }
+
+    update(player, ball, field, teammates, opponents, dt, rng) {
+        this._rng = rng || null;
         this.decisionTimer -= dt;
 
         if (this.decisionTimer > 0) {
@@ -92,7 +99,7 @@ class AIController {
             return { kick: false, chargeRatio: 0.3 };
         }
 
-        this.decisionTimer = this.reactionTime + Math.random() * this.reactionJitter;
+        this.decisionTimer = this.reactionTime + this._random() * this.reactionJitter;
 
         this.assignRole(player, ball, field, teammates, opponents);
 
@@ -335,7 +342,7 @@ class AIController {
             if (distToGoal < field.width * 0.2) charge = 0.75;
             if (distToGoal < field.width * 0.12) charge = 0.9;
 
-            if (Math.random() < this.accuracy) {
+            if (this._random() < this.accuracy) {
                 return { kick: true, chargeRatio: charge };
             }
         }
@@ -344,7 +351,7 @@ class AIController {
         if (pass && this.isAimedAt(player, ball, pass.x, pass.y) && !this.wouldKickTowardOwnGoal(player, ball, field)) {
             const passDist = Physics.distance(player, pass);
             const charge = Math.min(0.15 + passDist / (field.width * 2), 0.45);
-            if (Math.random() < this.accuracy * 0.85) {
+            if (this._random() < this.accuracy * 0.85) {
                 return { kick: true, chargeRatio: charge };
             }
         }
@@ -365,9 +372,9 @@ class AIController {
         const goalTop = field.goalY + 12;
         const goalBottom = field.goalY + field.goalHeight - 12;
 
-        const jitter = (1 - this.accuracy) * 30 * (Math.random() - 0.5);
+        const jitter = (1 - this.accuracy) * 30 * (this._random() - 0.5);
 
-        if (Math.random() < 0.5) {
+        if (this._random() < 0.5) {
             return Math.min(goalBottom + jitter, goalBottom);
         } else {
             return Math.max(goalTop + jitter, goalTop);
@@ -447,9 +454,13 @@ class AIController {
         const dist = Math.sqrt(dx * dx + dy * dy);
 
         if (dist > 3) {
-            const n = Physics.normalize(dx, dy);
+            // Inline the unit vector (reusing `dist`) instead of calling
+            // Physics.normalize, which allocates a fresh {x,y} object on this
+            // per-tick hot path (one AI moves every tick). dist > 3 guarantees
+            // a non-zero divisor, matching normalize's len === 0 guard.
+            const inv = 1 / dist;
             const speed = Math.min(dist / this.moveDiv, 1);
-            player.applyInput(n.x * speed, n.y * speed);
+            player.applyInput(dx * inv * speed, dy * inv * speed);
         }
     }
 }

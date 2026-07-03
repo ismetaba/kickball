@@ -92,6 +92,7 @@ final class Player {
         pos += vel * dtRatio
     }
 
+    @discardableResult
     func activatePull() -> Bool {
         if pullCooldownMs > 0 || pullActive { return false }
         pullActive = true
@@ -153,4 +154,12 @@ final class Player {
 
 enum PowerUpKind {
     case speed, ghost, dash, shield, frozen, slowed
+}
+
+// Identity-based Hashable: each Player instance is unique, so it can key the
+// renderer's per-player node map and form sets. (A plain class is NOT Hashable
+// by default, so this conformance is required for `[Player: SKNode]` to build.)
+extension Player: Hashable {
+    static func == (lhs: Player, rhs: Player) -> Bool { lhs === rhs }
+    func hash(into hasher: inout Hasher) { hasher.combine(ObjectIdentifier(self)) }
 }

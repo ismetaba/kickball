@@ -284,7 +284,18 @@ class UI {
         this.game.isLockstep = false;
         this.game._lockstepInputBuffer = null;
         this.game._applyPeerInputs = null;
+        this.game._pendingChecksums = null;
+        this.game._recentChecksums = null;
+        this.game._ciHistory = null;
+        this.game._onLockstepStall = null;
+        this.game._endMatchAtTick = null;
+        this.game._replayUntil = 0;
         this.game.isOnline = false;
+        // Restore the difficulty the lockstep match pinned to 'normal'
+        if (this._preP2PDifficulty !== undefined) {
+            this.game.settings.difficulty = this._preP2PDifficulty;
+            this._preP2PDifficulty = undefined;
+        }
 
         this.game.quit();
 
@@ -414,6 +425,11 @@ class UI {
         // Client: handle goal from host
         this.p2p.onGoal = (data) => {
             if (this.p2p.isHost) return; // Host already handles goals locally
+            // Lockstep guests run the full deterministic sim: their own
+            // scoreGoal() already handled scores, notification and sound.
+            // Overwriting sim state from an async network message here
+            // double-counts goals and fights the checksum/resync layer.
+            if (this.game.isLockstep) return;
             this.game.redScore = data.redScore || 0;
             this.game.blueScore = data.blueScore || 0;
             const dom = this.game._dom;
@@ -505,14 +521,27 @@ class UI {
     }
 
     _startP2PHostMatch(data) {
-        // Adaptive input delay: use measured RTT or default to 3
-        const INPUT_DELAY = this.p2p ? this.p2p.getAdaptiveInputDelay() : 3;
+        // Guard against double invocation (duplicate match_starting would
+        // re-seed and restart the host mid-match, desyncing everyone).
+        if (this.game.isRunning) return;
+
+        // Input delay: server-echoed value from match_starting so host and
+        // guests pre-seed the identical tick range (a mismatch desyncs tick 0).
+        const INPUT_DELAY = Number.isInteger(data.inputDelay) ? data.inputDelay : 3;
+
+        // Remember the local difficulty — lockstep pins it to 'normal' below,
+        // and it must not leak into the next offline match.
+        this._preP2PDifficulty = this.game.settings.difficulty;
 
         // Host runs the game using lockstep
         this.game.settings = {
             ...this.game.settings,
             ...data.settings,
         };
+        // Lockstep sims must be identical on every peer: difficulty is not part
+        // of the shared room settings, so pin it rather than inherit whatever
+        // this device last used offline.
+        this.game.settings.difficulty = 'normal';
         this.game.isOnline = false;
         this.game.isP2PHost = true;
         this.game.p2p = this.p2p;
@@ -520,9 +549,15 @@ class UI {
         this.game._lockstepInputBuffer = new Map();
         this.game._myPlayerIdx = 0; // Host is always player 0
         this.game._inputDelay = INPUT_DELAY; // Store for runtime use
+        // Clear single-device mode flags that would otherwise leak into this
+        // match (e.g. practiceMode freezes the match timer on one peer only).
+        this.game.practiceMode = false;
+        this.game.isLocal1v1 = false;
+        this.game.isSpectator = false;
 
-        // Generate and share a match seed
-        const matchSeed = (Date.now() * 7 + 13) | 0;
+        // Seed the shared RNG from the server-minted match seed (the same
+        // match_starting message delivers it to every peer).
+        const matchSeed = data.matchSeed || 12345;
         this.game.rng.seed(matchSeed);
 
         // Start the game
@@ -587,8 +622,10 @@ class UI {
             this.game._slotControlled.set(i, this.game.players[i]);
         }
 
-        // Send match seed with match_starting so clients can seed their RNG
-        this.p2p.broadcastMatchStarting({ ...data, matchSeed });
+        // The AI update loop consumes the shared RNG in aiControllers order, so
+        // that order must be identical on every peer.
+        this.game.aiControllers.sort((a, b) =>
+            this.game.players.indexOf(a.player) - this.game.players.indexOf(b.player));
 
         // Pending peer inputs: tick -> Map(peerId -> input)
         this._pendingPeerInputs = new Map();
@@ -620,14 +657,35 @@ class UI {
                 peerMap.delete(peerId);
                 this._tryConfirmTick(tick);
             }
+            // Also re-try every host-scheduled tick: ticks blocked SOLELY on
+            // the departed peer have no _pendingPeerInputs entry at all, so the
+            // loop above never visits them — without this the host deadlocks
+            // forever when its only guest leaves mid-match.
+            for (const tick of [...this._hostInputTicks.keys()].sort((a, b) => a - b)) {
+                this._tryConfirmTick(tick);
+            }
             this._showToast('A player disconnected');
+        };
+
+        // Unrecoverable stall: a peer stopped delivering inputs (hidden tab,
+        // dead connection the socket layer hasn't noticed). Kick them so the
+        // match resumes for everyone else.
+        this.game._onLockstepStall = (tick) => {
+            const peerInputs = this._pendingPeerInputs.get(tick);
+            for (const peerId of [...this._peerIds]) {
+                if (!peerInputs || !peerInputs.has(peerId)) {
+                    this.p2p.onPeerDisconnected({ peerId });
+                }
+            }
         };
 
         // Track which ticks the host has submitted its own input for
         this._hostInputTicks = new Map(); // tick -> input
 
-        // Each frame: read local input and schedule for future tick
-        // INPUT_DELAY is fixed for the duration of the match to avoid pipeline gaps.
+        // Called once per EXECUTED tick (from the lockstep accumulator loop):
+        // read local input and schedule it for tickCount + INPUT_DELAY. The
+        // host's input reaches guests inside the confirmed-inputs broadcast,
+        // so no separate 'li' send is needed (guests have no handler for it).
         this.game._applyPeerInputs = () => {
             const game = this.game;
             const targetTick = game.tickCount + INPUT_DELAY;
@@ -635,13 +693,6 @@ class UI {
             // Package local input
             const localInput = this._packageLockstepInput();
             this._hostInputTicks.set(targetTick, localInput);
-
-            // Also send to peers so they know host input is ready
-            this.p2p.sendLockstepInput(targetTick, game._myPlayerIdx, {
-                x: localInput.x, y: localInput.y,
-                kick: localInput.kick, chargeRatio: localInput.chargeRatio,
-                pull: localInput.pull, switchPlayer: localInput.switchPlayer
-            });
 
             // Try to confirm any pending ticks
             this._tryConfirmTick(targetTick);
@@ -711,11 +762,15 @@ class UI {
     _packageLockstepInput() {
         const input = this.game.input;
         const chargeRatio = input.kickRelease ? Math.min(input.kickChargeTime / 1500, 1) : 0;
+        // Quantize exactly like the wire encoding ((v*100)|0 / 100): the host
+        // applies its own input from this object directly, so it must simulate
+        // the same values the guests decode from the network.
+        const q = (v) => ((v * 100) | 0) / 100;
         const result = {
-            x: input.x,
-            y: input.y,
+            x: q(input.x),
+            y: q(input.y),
             kick: !!input.kickRelease,
-            chargeRatio: chargeRatio,
+            chargeRatio: q(chargeRatio),
             pull: !!input.pull,
             switchPlayer: !!input.switchPlayer
         };
@@ -768,14 +823,21 @@ class UI {
     }
 
     _startP2PClientMatch(data) {
-        // Adaptive input delay: use measured RTT or default to 3
-        const INPUT_DELAY = this.p2p ? this.p2p.getAdaptiveInputDelay() : 3;
+        // Input delay: server-echoed value from match_starting — must match the
+        // host's exactly, or the pre-seeded tick ranges diverge at tick 0.
+        const INPUT_DELAY = Number.isInteger(data.inputDelay) ? data.inputDelay : 3;
 
         // Guard against double invocation (WS + DC both fire match_starting)
         if (this.game.isRunning) return;
 
+        // Remember the local difficulty — lockstep pins it to 'normal' below,
+        // and it must not leak into the next offline match.
+        this._preP2PDifficulty = this.game.settings.difficulty;
+
         // Client in P2P lockstep mode — runs identical physics locally
         this.game.settings = data.settings || { teamSize: 1, map: 'classic', duration: 180, goalLimit: 0 };
+        // Pin difficulty like the host does — it is not a shared room setting.
+        this.game.settings.difficulty = 'normal';
         this.game.isOnline = false; // Not using old online interpolation
         this.game.isHost = false;
         this.game.isP2PHost = false;
@@ -783,6 +845,14 @@ class UI {
         this.game.p2p = this.p2p;
         this.game._lockstepInputBuffer = new Map();
         this.game._inputDelay = INPUT_DELAY;
+        this.game._pendingChecksums = new Map();
+        this.game._recentChecksums = new Map();
+        this.game._ciHistory = new Map();
+        // Clear single-device mode flags that would otherwise leak into this
+        // match (e.g. practiceMode freezes the match timer on one peer only).
+        this.game.practiceMode = false;
+        this.game.isLocal1v1 = false;
+        this.game.isSpectator = false;
 
         // Seed RNG with same match seed as host
         const matchSeed = data.matchSeed || 12345;
@@ -870,11 +940,20 @@ class UI {
             this.game._slotControlled.set(i, this.game.players[i]);
         }
 
+        // The AI update loop consumes the shared RNG in aiControllers order, so
+        // that order must be identical on every peer (re-adding the default
+        // human's AI above appended it out of order).
+        this.game.aiControllers.sort((a, b) =>
+            this.game.players.indexOf(a.player) - this.game.players.indexOf(b.player));
+
         this._ensureControls();
 
         // Client: receive confirmed inputs from host and add to lockstep buffer
         this.p2p.onConfirmedInputs = (cData) => {
             const tick = cData.tk;
+            // Late duplicate for a tick we already executed — ignore, or it
+            // would sit in the buffer forever.
+            if (tick < this.game.tickCount) return;
             const inputs = cData.inputs;
             const confirmedMap = new Map();
 
@@ -890,29 +969,49 @@ class UI {
             }
 
             this.game._lockstepInputBuffer.set(tick, confirmedMap);
+
+            // Keep recent confirmed inputs so a checksum mismatch for a past
+            // tick can rewind + replay (rollback) instead of going uncorrected.
+            const hist = this.game._ciHistory;
+            if (hist) {
+                hist.set(tick, confirmedMap);
+                while (hist.size > 240) {
+                    hist.delete(hist.keys().next().value);
+                }
+            }
         };
 
-        // Client: receive checksum from host — auto-resync on mismatch
+        // Client: verify host checksums at the exact tick they were computed
+        // for. Future ticks are buffered (verified when we reach them); past
+        // ticks are compared against our own recorded hash and roll back on
+        // mismatch — the guest often runs AHEAD of the host's execution
+        // (confirmations outpace the host's frame loop), so "past" checksums
+        // are the common case, not an anomaly.
         this.p2p.onChecksum = (csData) => {
-            const tick = csData.tk;
-            const hostHash = csData.h;
-            const fullState = csData.fs;
-            // If we've already passed this tick, verify
-            if (this.game.tickCount >= tick) {
-                const localHash = this.game._computeChecksum();
-                if (localHash !== hostHash) {
-                    console.warn(`Lockstep desync at tick ${tick}: local=${localHash}, host=${hostHash} — resyncing`);
-                    // Auto-resync: apply host's authoritative state
-                    if (fullState) {
-                        this.game._applyFullState(fullState);
-                        console.log(`Resync applied from host at tick ${tick}`);
+            if (!this.game._pendingChecksums) return;
+            if (csData.tk === this.game.tickCount) {
+                this.game._verifyChecksum(csData);
+            } else if (csData.tk > this.game.tickCount) {
+                this.game._pendingChecksums.set(csData.tk, csData);
+            } else {
+                const mine = this.game._recentChecksums && this.game._recentChecksums.get(csData.tk);
+                if (mine !== undefined && mine !== csData.h) {
+                    console.warn(`Lockstep desync at past tick ${csData.tk} — rolling back`);
+                    if (!this.game._rollbackToChecksum(csData)) {
+                        console.error('Rollback impossible (confirmed-input history gap) — desync persists until next checksum');
                     }
                 }
             }
         };
 
-        // Each frame: send local input to host for a future tick
-        // INPUT_DELAY is fixed for the duration of the match to avoid pipeline gaps.
+        // Guest-side unrecoverable stall: surface it — if the host is truly
+        // gone, the hostLeft/disconnect path tears the match down.
+        this.game._onLockstepStall = () => {
+            this._showToast('Connection stalled — waiting for host…');
+        };
+
+        // Called once per EXECUTED tick (from the lockstep accumulator loop):
+        // send local input to the host for tickCount + INPUT_DELAY.
         this.game._applyPeerInputs = () => {
             const game = this.game;
             const targetTick = game.tickCount + INPUT_DELAY;
@@ -944,8 +1043,11 @@ class UI {
             if (slot.team === 'red') redSlots.appendChild(div);
             else blueSlots.appendChild(div);
 
-            const myId = this._isP2PRoom ? this.p2p.playerId : this.network.playerId;
-            if (slot.playerId === myId) {
+            // All rooms are P2P rooms — the legacy this.network branch threw a
+            // TypeError here for every joiner (swallowed upstream), leaving the
+            // joiner's lobby half-rendered and _myTeam unset.
+            const myId = this.p2p ? this.p2p.playerId : null;
+            if (myId && slot.playerId === myId) {
                 this._myTeam = slot.team;
             }
         }

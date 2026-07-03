@@ -4,6 +4,7 @@
 //
 // Decision rate: ~30 Hz (every other physics tick). Same as the JS runtime.
 
+import Foundation
 import CoreGraphics
 
 final class RLAgent: AgentController {
@@ -16,11 +17,19 @@ final class RLAgent: AgentController {
     private var lastKick: Bool = false
     private var lastPull: Bool = false
     private var obsScratch: [Float]
+    // Reused forward-pass scratch buffers (avoids 3 heap allocations per
+    // decision per agent — meaningful at 4v4 expert with up to 7 RL agents).
+    private var h1Scratch: [Float]
+    private var h2Scratch: [Float]
+    private var outScratch: [Float]
 
     init(policy: PolicyNet) {
         self.policy = policy
         self.stack = FrameStack(featureDim: RLEncoder.featureDim, k: RLEncoder.stackK)
         self.obsScratch = [Float](repeating: 0, count: RLEncoder.featureDim)
+        self.h1Scratch = [Float](repeating: 0, count: policy.hidden)
+        self.h2Scratch = [Float](repeating: 0, count: policy.hidden)
+        self.outScratch = [Float](repeating: 0, count: policy.actor.outDim)
     }
 
     func update(player: Player, ball: Ball, field: Field,
@@ -45,8 +54,8 @@ final class RLAgent: AgentController {
             } else {
                 stack.push(obsScratch)
             }
-            let raw = policy.forward(stack.stacked)
-            let dec = PolicyNet.decodeDeterministic(raw)
+            policy.forward(stack.stacked, h1: &h1Scratch, h2: &h2Scratch, out: &outScratch)
+            let dec = PolicyNet.decodeDeterministic(outScratch)
             let isRed = (player.team == .red)
             let worldVx: CGFloat = isRed ? CGFloat(dec.moveX) : -CGFloat(dec.moveX)
             let worldVy: CGFloat = CGFloat(dec.moveY)

@@ -5,10 +5,48 @@ const AIController = require('../shared/ai');
 const PowerUpManager = require('../shared/powerups');
 const GameConstants = require('../shared/constants');
 
+// The shared Physics module exposes its tunable constants as mutable fields.
+// Because Node caches a single Physics object across every GameSimulation,
+// each tick MUST re-establish its own room's constants before touching any
+// entity — otherwise two concurrent matches (e.g. a `huge` map and a
+// `classic` one, or one in sudden-death) corrupt each other's physics.
+// We snapshot the pristine defaults here, at module load, before any
+// instance has had a chance to mutate them.
+const PHYSICS_DEFAULTS = {
+    KICK_FORCE: Physics.KICK_FORCE,
+    POWER_KICK_FORCE: Physics.POWER_KICK_FORCE,
+    MAX_BALL_SPEED: Physics.MAX_BALL_SPEED,
+    MAX_PLAYER_SPEED: Physics.MAX_PLAYER_SPEED,
+};
+
+// Per-map physics multipliers (applied on top of PHYSICS_DEFAULTS).
+const MAP_PHYSICS_MULTIPLIERS = {
+    huge: { KICK_FORCE: 1.4, POWER_KICK_FORCE: 1.4, MAX_BALL_SPEED: 1.5, MAX_PLAYER_SPEED: 1.3 },
+};
+
+// Sudden-death ramps MAX_BALL_SPEED up by this much at full shrink.
+const SUDDEN_DEATH_BALL_SPEED_BONUS = 10;
+
+// Delay between a match-deciding goal and tearing the match down (lets the
+// goal celebration play out on clients).
+const MATCH_END_DELAY_MS = 2100;
+
+// Kick charge saturates at this many ms of hold (full power shot).
+const MAX_KICK_CHARGE_MS = 1500;
+
+// Clamp a value to the [-1, 1] range, collapsing NaN/Infinity to 0.
+function clampUnit(v) {
+    if (!Number.isFinite(v)) return 0;
+    return v < -1 ? -1 : v > 1 ? 1 : v;
+}
+
 class GameSimulation {
     constructor(settings) {
         this.settings = settings;
         this.tickRate = GameConstants.TICK_RATE;
+        // How many ticks elapse between state sends (cached; both inputs are
+        // constant for the life of the simulation).
+        this._ticksPerState = Math.max(1, Math.round(this.tickRate / GameConstants.STATE_SEND_RATE));
         this.tickNumber = 0;
         this.tickInterval = null;
 
@@ -45,9 +83,25 @@ class GameSimulation {
         this.combo = { team: null, count: 0 };
         this.suddenDeath = false;
         this.suddenDeathTimer = 0;
-        this.suddenDeathMaxTime = 60000;
+        this.suddenDeathMaxTime = GameConstants.SUDDEN_DEATH_TIMER;
         this.suddenDeathShrink = 0;
-        this._originalMaxBallSpeed = Physics.MAX_BALL_SPEED;
+
+        // Per-room physics constants (see PHYSICS_DEFAULTS comment above).
+        // Computed once here, re-applied to the shared Physics object at the
+        // top of every tick so concurrent rooms stay isolated.
+        this._physics = { ...PHYSICS_DEFAULTS };
+        const mult = MAP_PHYSICS_MULTIPLIERS[settings.map];
+        if (mult) {
+            for (const key of Object.keys(mult)) {
+                this._physics[key] = PHYSICS_DEFAULTS[key] * mult[key];
+            }
+        }
+        this._baseMaxBallSpeed = this._physics.MAX_BALL_SPEED;
+
+        // Tracked match-end timers so stop() can cancel them (prevents
+        // _endMatch firing against a torn-down simulation).
+        this._pendingTimers = new Set();
+        this._endScheduled = false;
 
         this.stats = {
             possession: { red: 0, blue: 0 },
@@ -68,29 +122,27 @@ class GameSimulation {
         this.powerUpManager = new PowerUpManager(this.field);
         this.powerUpManager.enabled = settings.powerups !== false;
 
-        // Event buffer (flushed each state send)
-        this.pendingEvents = [];
-
         // Callbacks
         this.onStateUpdate = null; // called at STATE_SEND_RATE
         this.onGoal = null;
         this.onMatchEnd = null;
         this.onEvent = null;
 
-        // Apply map physics
-        this._applyMapPhysics();
-
         // Create spawn positions
         this._spawnPositions = this._getSpawnPositions();
     }
 
-    _applyMapPhysics() {
-        if (this.settings.map === 'huge') {
-            Physics.KICK_FORCE = 9.5 * 1.4;
-            Physics.POWER_KICK_FORCE = 9.8 * 1.4;
-            Physics.MAX_BALL_SPEED = 30 * 1.5;
-            Physics.MAX_PLAYER_SPEED = 5.2 * 1.3;
-        }
+    // Push this room's physics constants onto the shared Physics object.
+    // Called at the top of every tick so concurrent simulations never read
+    // another room's constants. Sudden-death ramps MAX_BALL_SPEED based on
+    // this room's shrink progress.
+    _applyPhysicsConfig() {
+        Physics.KICK_FORCE = this._physics.KICK_FORCE;
+        Physics.POWER_KICK_FORCE = this._physics.POWER_KICK_FORCE;
+        Physics.MAX_PLAYER_SPEED = this._physics.MAX_PLAYER_SPEED;
+        Physics.MAX_BALL_SPEED = this.suddenDeath
+            ? this._baseMaxBallSpeed + this.suddenDeathShrink * SUDDEN_DEATH_BALL_SPEED_BONUS
+            : this._physics.MAX_BALL_SPEED;
     }
 
     _getSpawnPositions() {
@@ -191,13 +243,20 @@ class GameSimulation {
     // not overwritten — otherwise they get lost if another input arrives
     // before the server tick processes them.
     applyInput(playerId, input) {
+        if (!input || typeof input !== 'object') return;
         const slot = this.slots.find(s => s.playerId === playerId);
         if (!slot) return;
         const q = this._inputQueues[slot.index];
-        q.x = (input.x || 0) / 100; // client sends *100 integer
-        q.y = (input.y || 0) / 100;
+        // Client sends direction *100 as an integer. Coerce to a number and
+        // clamp the resulting unit-ish direction to [-1, 1] — never trust the
+        // wire. NaN/Infinity collapse to 0.
+        q.x = clampUnit((Number(input.x) || 0) / 100);
+        q.y = clampUnit((Number(input.y) || 0) / 100);
         q.kickCharging = !!(input.kc || input.kickCharging);
-        q.kickChargeTime = input.kt || input.kickChargeTime || 0;
+        // Charge time is capped at the max useful charge; a malicious client
+        // can't request an out-of-range kick.
+        const rawCharge = Number(input.kt ?? input.kickChargeTime) || 0;
+        q.kickChargeTime = Math.max(0, Math.min(rawCharge, MAX_KICK_CHARGE_MS));
         // OR one-shot events so they survive until consumed by tick()
         q.kickRelease = q.kickRelease || !!(input.kr || input.kickRelease);
         q.switchPlayer = q.switchPlayer || !!(input.sp || input.switchPlayer);
@@ -206,7 +265,33 @@ class GameSimulation {
 
     start() {
         this.isRunning = true;
-        this.tickInterval = setInterval(() => this.tick(), 1000 / this.tickRate);
+        // Fixed-timestep driver: each setInterval fire advances the sim by as
+        // many whole TICK_MS steps as real time has actually elapsed, so the
+        // match clock tracks wall time despite setInterval jitter/drift and the
+        // snapshot cadence stays smooth for clients. tick() always steps exactly
+        // TICK_MS, so per-step physics determinism is preserved.
+        this._lastTickTime = Date.now();
+        this._tickAccumulator = 0;
+        this.tickInterval = setInterval(() => this._drive(), 1000 / this.tickRate);
+    }
+
+    _drive() {
+        if (!this.isRunning) return;
+        const now = Date.now();
+        let elapsed = now - this._lastTickTime;
+        this._lastTickTime = now;
+        // Clamp accumulated time so a long stall (GC, overloaded host) cannot
+        // trigger a spiral-of-death catch-up; drop the excess instead.
+        const maxStep = GameConstants.TICK_MS * 5;
+        if (elapsed > maxStep) elapsed = maxStep;
+        this._tickAccumulator += elapsed;
+        let steps = 0;
+        while (this._tickAccumulator >= GameConstants.TICK_MS && steps < 5) {
+            this.tick();
+            this._tickAccumulator -= GameConstants.TICK_MS;
+            steps++;
+            if (!this.isRunning) break; // tick() may have ended the match
+        }
     }
 
     stop() {
@@ -215,6 +300,22 @@ class GameSimulation {
             clearInterval(this.tickInterval);
             this.tickInterval = null;
         }
+        // Cancel any pending match-end timers so they can't fire against a
+        // torn-down simulation.
+        for (const t of this._pendingTimers) clearTimeout(t);
+        this._pendingTimers.clear();
+    }
+
+    // Schedule _endMatch after the celebration delay, tracking the timer so
+    // stop() can cancel it. Guards against double-scheduling.
+    _scheduleEndMatch() {
+        if (this._endScheduled) return;
+        this._endScheduled = true;
+        const t = setTimeout(() => {
+            this._pendingTimers.delete(t);
+            this._endMatch();
+        }, MATCH_END_DELAY_MS);
+        this._pendingTimers.add(t);
     }
 
     tick() {
@@ -245,13 +346,12 @@ class GameSimulation {
         }
 
         const scaledDt = dt * this.timeScale;
-        Physics.dtRatio = (scaledDt / 16.67) * Physics.GAME_SPEED;
+        Physics.dtRatio = (scaledDt / GameConstants.TICK_MS) * Physics.GAME_SPEED;
 
         // Timer
         if (this.suddenDeath) {
             this.suddenDeathTimer += dt;
             this.suddenDeathShrink = Math.min(this.suddenDeathTimer / this.suddenDeathMaxTime, 1);
-            Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed + this.suddenDeathShrink * 10;
 
             if (this.suddenDeathTimer >= this.suddenDeathMaxTime) {
                 this._endMatch();
@@ -276,6 +376,10 @@ class GameSimulation {
             }
         }
 
+        // Re-establish this room's physics constants on the shared Physics
+        // object before any entity reads them this tick (cross-room safety).
+        this._applyPhysicsConfig();
+
         // Momentum decay
         this.momentum.red = Math.max(0, this.momentum.red - this.momentum.decayRate * scaledDt);
         this.momentum.blue = Math.max(0, this.momentum.blue - this.momentum.decayRate * scaledDt);
@@ -294,7 +398,7 @@ class GameSimulation {
             p.applyInput(input.x, input.y);
 
             if (input.kickCharging) {
-                p.kickChargeRatio = Math.min(input.kickChargeTime / 1500, 1);
+                p.kickChargeRatio = Math.min(input.kickChargeTime / MAX_KICK_CHARGE_MS, 1);
                 const slowFactor = 1 - p.kickChargeRatio * 0.015;
                 p.vx *= Math.pow(slowFactor, Physics.dtRatio);
                 p.vy *= Math.pow(slowFactor, Physics.dtRatio);
@@ -303,7 +407,7 @@ class GameSimulation {
             }
 
             if (input.kickRelease) {
-                const chargeRatio = Math.min(input.kickChargeTime / 1500, 1);
+                const chargeRatio = Math.min(input.kickChargeTime / MAX_KICK_CHARGE_MS, 1);
                 this._hitNearbyPlayers(p, chargeRatio);
                 if (p.kick(this.ball, chargeRatio)) {
                     this.stats.shots[p.team]++;
@@ -473,7 +577,8 @@ class GameSimulation {
 
             // Auto kick on contact for human players charging
             if (collided) {
-                const slot = (() => { const _s = this._playerSlotMap.get(p); return _s && _s.isHuman ? _s : null; })();
+                const _s = this._playerSlotMap.get(p);
+                const slot = _s && _s.isHuman ? _s : null;
                 if (slot) {
                     const input = this._inputQueues[slot.index];
                     if (input.kickCharging) {
@@ -625,9 +730,8 @@ class GameSimulation {
     }
 
     _maybeSendState() {
-        // Send state at STATE_SEND_RATE (every N ticks)
-        const ticksPerState = Math.round(this.tickRate / GameConstants.STATE_SEND_RATE);
-        if (this.tickNumber % ticksPerState === 0 && this.onStateUpdate) {
+        // Send state at STATE_SEND_RATE (every _ticksPerState ticks)
+        if (this.tickNumber % this._ticksPerState === 0 && this.onStateUpdate) {
             this.onStateUpdate(this.getStateSnapshot());
         }
     }
@@ -671,14 +775,14 @@ class GameSimulation {
 
         // Sudden death: first goal wins
         if (this.suddenDeath) {
-            setTimeout(() => this._endMatch(), 2100);
+            this._scheduleEndMatch();
             return;
         }
 
         // Check goal limit
         if (this.settings.goalLimit > 0) {
             if (this.redScore >= this.settings.goalLimit || this.blueScore >= this.settings.goalLimit) {
-                setTimeout(() => this._endMatch(), 2100);
+                this._scheduleEndMatch();
             }
         }
     }
@@ -771,7 +875,8 @@ class GameSimulation {
     }
 
     _emitEvent(type, data) {
-        this.pendingEvents.push({ type, data });
+        // Events are fire-and-forget: dispatched immediately to the room, which
+        // broadcasts them to clients. No buffering.
         if (this.onEvent) {
             this.onEvent({ type, data });
         }

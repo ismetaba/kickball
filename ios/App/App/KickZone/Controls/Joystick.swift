@@ -7,7 +7,10 @@
 import SwiftUI
 
 struct ControlsOverlay: View {
-    @ObservedObject var engine: GameEngine
+    // Plain reference (not @ObservedObject): the controls only WRITE input into
+    // the engine and never read its @Published state, so observing it would just
+    // force this overlay to re-render on every engine publish.
+    let engine: GameEngine
     @State private var charging = false
     @State private var chargeStart: TimeInterval = 0
 

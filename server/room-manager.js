@@ -62,10 +62,15 @@ class RoomManager {
             case MSG.P2P_RELAY_STATE:
             case MSG.P2P_RELAY_GOAL:
             case MSG.P2P_RELAY_END:
+            case MSG.P2P_RELAY_CI:
+            case MSG.P2P_RELAY_CS:
                 this._relayP2PData(playerId, msg);
                 break;
             case MSG.P2P_RELAY_INPUT:
                 this._relayP2PInput(playerId, msg);
+                break;
+            case MSG.P2P_MATCH_ENDED:
+                this._p2pMatchEnded(playerId);
                 break;
             default:
                 break;
@@ -165,6 +170,13 @@ class RoomManager {
         const roomCode = this.playerRooms.get(playerId);
         if (!roomCode) return;
 
+        // P2P membership is stored as 'p2p:CODE' — route it to the P2P
+        // teardown (previously this silently orphaned the room forever).
+        if (roomCode.startsWith('p2p:')) {
+            this._leaveP2PRoom(playerId);
+            return;
+        }
+
         const room = this.rooms.get(roomCode);
         if (room) {
             room.removePlayer(playerId);
@@ -189,6 +201,9 @@ class RoomManager {
             return;
         }
 
+        // Free the room + player mappings promptly when the match ends
+        // naturally, instead of waiting for the 60s stale-room sweep.
+        room.onFinished = () => this._cleanupRoom(roomCode);
         room.startMatch();
     }
 
@@ -206,7 +221,17 @@ class RoomManager {
                 // Host can't switch for now (always red)
             } else {
                 const peer = p2pRoom.peers.get(playerId);
-                if (peer && team) peer.team = team;
+                // Whitelist the team and enforce capacity, mirroring the
+                // classic-room rules — arbitrary strings or an over-full team
+                // corrupt slot assignment at match start.
+                if (peer && (team === 'red' || team === 'blue') && peer.team !== team) {
+                    const teamSize = (p2pRoom.settings && p2pRoom.settings.teamSize) || 2;
+                    let count = team === 'red' ? 1 : 0; // host is red
+                    for (const [, p] of p2pRoom.peers) {
+                        if (p.team === team) count++;
+                    }
+                    if (count < teamSize) peer.team = team;
+                }
             }
             this._broadcastP2PRoom(code, p2pRoom);
             return;
@@ -218,24 +243,26 @@ class RoomManager {
         room.switchTeam(playerId, data?.team);
     }
 
-    _quickMatch(playerId, ws, data) {
+    _quickMatch(playerId, ws, data = {}) {
         this._leaveRoom(playerId);
-        this.playerWs.set(playerId, ws);
 
         const name = data?.name || 'Player';
 
         // Find an open waiting room that isn't full
         for (const [roomCode, room] of this.rooms) {
             if (room.state === ROOM_STATE.WAITING && room.playerCount < room.maxPlayers) {
-                // Join this room
+                // Join this room. addPlayer can still refuse (full/started); if it
+                // does, fall through to the next candidate instead of leaving the
+                // player with a phantom room mapping.
                 const team = this._getBalancedTeam(room);
-                room.addPlayer(playerId, ws, name, team);
+                if (!room.addPlayer(playerId, ws, name, team)) continue;
                 this.playerRooms.set(playerId, roomCode);
                 this._sendTo(ws, MSG.ROOM_JOINED, {
                     roomCode,
                     playerId,
                     slots: room.getSlotInfo(),
                     settings: room.settings,
+                    yourSlot: null,
                     isHost: false,
                 });
                 return;
@@ -255,7 +282,7 @@ class RoomManager {
         return red <= blue ? 'red' : 'blue';
     }
 
-    _updateSettings(playerId, data) {
+    _updateSettings(playerId, data = {}) {
         const ref = this.playerRooms.get(playerId);
         if (!ref) return;
 
@@ -264,7 +291,18 @@ class RoomManager {
             const code = ref.slice(4);
             const p2pRoom = this.p2pRooms.get(code);
             if (!p2pRoom || p2pRoom.hostId !== playerId) return;
-            if (data.teamSize && [1, 2, 3, 4].includes(data.teamSize)) {
+            if (data?.teamSize && [1, 2, 3, 4].includes(data.teamSize)) {
+                // Same occupancy rule as classic rooms: shrinking below the
+                // current per-team member count would strand players slotless.
+                let redCount = 1, blueCount = 0; // host is red
+                for (const [, p] of p2pRoom.peers) {
+                    if (p.team === 'red') redCount++; else blueCount++;
+                }
+                if (data.teamSize < Math.max(redCount, blueCount)) {
+                    const ws = this.playerWs.get(playerId);
+                    if (ws) this._sendTo(ws, MSG.ERROR, { message: 'Team size too small for current players' });
+                    return;
+                }
                 p2pRoom.settings.teamSize = data.teamSize;
             }
             this._broadcastP2PRoom(code, p2pRoom);
@@ -276,7 +314,20 @@ class RoomManager {
         if (room.state !== ROOM_STATE.WAITING) return;
 
         // Update allowed settings
-        if (data.teamSize && [1, 2, 3, 4].includes(data.teamSize)) {
+        if (data?.teamSize && [1, 2, 3, 4].includes(data.teamSize)) {
+            // Reject a teamSize that no longer fits the players already in the
+            // room. Each team holds teamSize players, so shrinking below the
+            // current per-team occupancy would strand the extra players with no
+            // simulation slot (invisible, uncontrollable) once the match starts.
+            let redCount = 0, blueCount = 0;
+            for (const [, p] of room.players) {
+                if (p.team === 'red') redCount++; else blueCount++;
+            }
+            if (data.teamSize < Math.max(redCount, blueCount)) {
+                const ws = this.playerWs.get(playerId);
+                if (ws) this._sendTo(ws, MSG.ERROR, { message: 'Team size too small for current players' });
+                return;
+            }
             room.settings.teamSize = data.teamSize;
         }
         room._broadcastRoomUpdate();
@@ -306,19 +357,48 @@ class RoomManager {
         return lobbies;
     }
 
+    // Remove a room and clear its players' room mappings. Used both by the
+    // stale-room sweep and immediately when a match ends naturally.
+    _cleanupRoom(roomCode) {
+        const room = this.rooms.get(roomCode);
+        if (!room) return;
+        if (room.simulation) room.simulation.stop();
+        for (const [playerId] of room.players) {
+            if (this.playerRooms.get(playerId) === roomCode) {
+                this.playerRooms.delete(playerId);
+            }
+        }
+        this.rooms.delete(roomCode);
+    }
+
     cleanupStaleRooms() {
         const now = Date.now();
         for (const [code, room] of this.rooms) {
             // Remove rooms that have been waiting too long or are finished
             if (room.state === ROOM_STATE.FINISHED ||
                 (room.state === ROOM_STATE.WAITING && now - room.createdAt > 10 * 60 * 1000)) {
-                if (room.simulation) room.simulation.stop();
-                // Clean up player mappings
-                for (const [playerId] of room.players) {
-                    this.playerRooms.delete(playerId);
-                }
-                this.rooms.delete(code);
+                this._cleanupRoom(code);
             }
+        }
+
+        // P2P rooms: normally torn down via leave/disconnect, but a socket that
+        // dies without a close event (zombie) or a missed teardown would leak
+        // the room and its ws references forever. Sweep rooms whose host socket
+        // is no longer open, and apply a generous absolute age cap.
+        for (const [code, room] of this.p2pRooms) {
+            const hostAlive = room.hostWs && room.hostWs.readyState === 1;
+            const expired = now - room.createdAt > 24 * 60 * 60 * 1000;
+            if (hostAlive && !expired) continue;
+            for (const [peerId, peer] of room.peers) {
+                this._sendTo(peer.ws, MSG.P2P_PEER_LEFT, { peerId: room.hostId, hostLeft: true });
+                if (this.playerRooms.get(peerId) === 'p2p:' + code) {
+                    this.playerRooms.delete(peerId);
+                }
+            }
+            if (this.playerRooms.get(room.hostId) === 'p2p:' + code) {
+                this.playerRooms.delete(room.hostId);
+            }
+            this.p2pRooms.delete(code);
         }
     }
 
@@ -330,7 +410,9 @@ class RoomManager {
             for (let i = 0; i < 4; i++) {
                 code += chars[Math.floor(Math.random() * chars.length)];
             }
-        } while (this.rooms.has(code));
+            // Must be unique across BOTH registries: _joinRoom routes colliding
+            // codes to the P2P room first, which would shadow this room.
+        } while (this.rooms.has(code) || this.p2pRooms.has(code));
         return code;
     }
 
@@ -341,16 +423,58 @@ class RoomManager {
         const room = this.p2pRooms.get(code);
         if (!room || room.hostId !== playerId) return;
 
+        // Idempotency: a duplicate start (double-click, retry) must not mint a
+        // fresh seed and restart peers mid-match — that desyncs everyone.
+        if (room.started) return;
+
+        // Evict peers whose socket is no longer open — a zombie guest would
+        // otherwise stall the no-fabrication lockstep for the entire room.
+        for (const [peerId, peer] of room.peers) {
+            if (!peer.ws || peer.ws.readyState !== 1) {
+                room.peers.delete(peerId);
+                if (this.playerRooms.get(peerId) === 'p2p:' + code) {
+                    this.playerRooms.delete(peerId);
+                }
+                this._sendTo(room.hostWs, MSG.P2P_PEER_LEFT, { peerId });
+            }
+        }
+
+        // Occupancy sanity: never start with more members than slots — two
+        // peers would map onto the same player index and corrupt the sim.
+        const teamSize = (room.settings && room.settings.teamSize) || 2;
+        let redCount = 1, blueCount = 0; // host is red
+        for (const [, p] of room.peers) {
+            if (p.team === 'red') redCount++; else blueCount++;
+        }
+        if (redCount > teamSize || blueCount > teamSize) {
+            this._sendTo(room.hostWs, MSG.ERROR, { message: 'Too many players for the current team size' });
+            return;
+        }
+
         // Build slots with proper indices
         const slots = this._getP2PSlots(room);
         let idx = 0;
         for (const s of slots) { s.index = idx++; }
+
+        // Lockstep determinism: the server mints the shared RNG seed and echoes
+        // the host's input delay so EVERY peer (host included) starts the match
+        // from identical parameters in the same message. (Previously the seed
+        // travelled host->DC->guest and always lost the race against this
+        // broadcast, so guests silently ran a different RNG stream.)
+        const matchSeed = (Math.floor(Math.random() * 0x7fffffff)) || 1;
+        const inputDelay = (Number.isInteger(data?.inputDelay) && data.inputDelay >= 2 && data.inputDelay <= 10)
+            ? data.inputDelay
+            : 3;
+
+        room.started = true;
 
         const matchData = {
             settings: room.settings,
             slots,
             isP2P: true,
             hostId: playerId,
+            matchSeed,
+            inputDelay,
         };
 
         // Tell everyone including host
@@ -367,7 +491,9 @@ class RoomManager {
 
     // --- P2P Signaling ---
     _createP2PRoom(playerId, ws, data) {
-        this._leaveP2PRoom(playerId);
+        // Routes both classic and p2p memberships (p2p-only _leaveP2PRoom left
+        // ghost membership behind when the creator was in a classic room).
+        this._leaveRoom(playerId);
         this.playerWs.set(playerId, ws);
 
         const code = this._generateP2PCode();
@@ -404,6 +530,34 @@ class RoomManager {
             this._sendTo(ws, MSG.ERROR, { message: 'Room not found' });
             return;
         }
+
+        if (room.started) {
+            this._sendTo(ws, MSG.ERROR, { message: 'Match already in progress' });
+            return;
+        }
+
+        const maxPlayers = ((room.settings && room.settings.teamSize) || 2) * 2;
+        if (1 + room.peers.size >= maxPlayers) {
+            this._sendTo(ws, MSG.ERROR, { message: 'Room is full' });
+            return;
+        }
+
+        // Duplicate join from a player already in this room (including the
+        // host): answer idempotently, never re-insert them into peers.
+        const currentRef = this.playerRooms.get(playerId);
+        if (currentRef === 'p2p:' + code) {
+            this._sendTo(ws, MSG.ROOM_JOINED, {
+                roomCode: code,
+                playerId,
+                slots: this._getP2PSlots(room),
+                settings: room.settings,
+                isHost: playerId === room.hostId,
+                isP2P: true,
+            });
+            return;
+        }
+        // Leave any other room the player is still in.
+        if (currentRef) this._leaveRoom(playerId);
 
         // Pick balanced team
         let red = 1, blue = 0; // host is red
@@ -453,6 +607,8 @@ class RoomManager {
             'p2p_relay_state': 'state',
             'p2p_relay_goal': 'goal',
             'p2p_relay_end': 'match_end',
+            'p2p_relay_ci': 'ci',
+            'p2p_relay_cs': 'cs',
         };
         const clientType = typeMap[msg.t] || msg.t;
 
@@ -471,6 +627,14 @@ class RoomManager {
 
         // Forward to host as a peer input message
         this._sendTo(room.hostWs, 'p2p_peer_input', { peerId: fromId, input: msg.d });
+    }
+
+    // Host reports its match ended: reopen the room for joins (rematch lobby).
+    _p2pMatchEnded(playerId) {
+        const ref = this.playerRooms.get(playerId);
+        if (!ref || !ref.startsWith('p2p:')) return;
+        const room = this.p2pRooms.get(ref.slice(4));
+        if (room && room.hostId === playerId) room.started = false;
     }
 
     _relaySignal(fromId, msg) {
