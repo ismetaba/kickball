@@ -23,6 +23,8 @@ const { PPOTrainer } = require('../js/rl/trainer');
 const { HeadlessEnv1v1 } = require('../js/rl/env');
 const AIController = require('../shared/ai');
 const D = require('../js/rl/drills');
+const { MatchAgent } = require('../js/rl/skills');
+const { MATCH_ENV: GAME_RULES, act, playMatches, fmtResult } = require('./lib/match');
 
 const args = parseArgs(process.argv.slice(2), {
     init: null,          // starting weights (a policy JSON), or a fresh net of --hidden
@@ -39,17 +41,14 @@ const args = parseArgs(process.argv.slice(2), {
     snapshots: true,
 });
 
-const MATCH_ENV = {
-    map: 'classic',
-    maxSteps: 1800,           // 60 s episodes
-    powerUps: false,
+// Training matches: real-game rules, 60 s episodes, random kickoff height and
+// the same abuse penalties as AI Lab phase 3 (orchestrator.js)
+const MATCH_ENV = Object.assign({}, GAME_RULES, {
+    maxSteps: 1800,
     randomKickoff: true,
-    disablePull: false,
-    disableSuperKick: false,
-    disableKickPlayer: false,
     superKickAbusePenalty: 0.05,
     kickPlayerAbusePenalty: 0.03,
-};
+});
 const OPPONENT_MIX = { rule: 0.35, init: 0.25, league: 0.2, self: 0.2 };
 const DRILL_LEVEL_MIX = [0.2, 0.4, 0.4];
 
@@ -113,7 +112,7 @@ function collectMatchRollout(T) {
         const myAct = toWorld(s.action, isRed);
         let oppAct;
         if (match.oppRule) {
-            oppAct = ruleAct(match.oppRule, opp, self, env);
+            oppAct = act(match.oppRule, opp, self, env);
         } else {
             const oObs = isRed ? env.stackBlue.get() : env.stackRed.get();
             oppAct = toWorld(match.oppPolicy.sampleAction(oObs).action, !isRed);
@@ -208,9 +207,10 @@ async function main() {
 // score = match points share (win 1, draw 0.5) averaged over both opponents,
 // blended with the mean drill success at levels 2 and 3.
 function evaluateAll() {
-    const me = () => new PolicyAgent(trainer.policy);
-    const vsRule = playMatches(me, () => new AIController('normal'), args.evalMatches);
-    const vsInit = initPolicy ? playMatches(me, () => new PolicyAgent(initPolicy), args.evalMatches) : null;
+    const me = () => new MatchAgent(trainer.policy);
+    const opts = { matches: args.evalMatches, seconds: 120 };
+    const vsRule = playMatches(me, () => new AIController('normal'), opts);
+    const vsInit = initPolicy ? playMatches(me, () => new MatchAgent(initPolicy), opts) : null;
     const drills = {};
     let sum = 0, n = 0;
     for (const s of D.SKILLS) {
@@ -227,71 +227,10 @@ function evaluateAll() {
 }
 
 function fmtEval(e) {
-    const m = (r) => r ? `${r.win}-${r.draw}-${r.loss} (${r.gf}:${r.ga})` : '-';
+    const m = (r) => r ? fmtResult(r) : '-';
     return `vs rule ${m(e.vsRule)}  vs init ${m(e.vsInit)}  drills L1/L2/L3 `
         + D.SKILLS.map(s => `${s} ${[1, 2, 3].map(l => Math.round(e.drills[s][l] * 100)).join('/')}`).join(' ')
         + `  score ${e.score.toFixed(3)}`;
-}
-
-// --- Match play for evaluation --------------------------------------------------
-
-// Mean movement, kick/pull drawn from their probabilities (as in training)
-class PolicyAgent {
-    constructor(policy) {
-        this.policy = policy;
-        this.obs = new Float32Array(RLEncoder.FEATURE_DIM);
-        this.stack = new RLEncoder.FrameStack(RLEncoder.FEATURE_DIM, RLEncoder.STACK_K);
-        this.primed = false;
-    }
-    act(self, opp, env) {
-        RLEncoder.encode(self, opp, env.ball, env.field, { timeLeft: 60000, scoreDiff: 0 }, null, this.obs, false);
-        if (this.primed) this.stack.push(this.obs); else { this.stack.fill(this.obs); this.primed = true; }
-        const { raw } = this.policy.forward(this.stack.get());
-        const isRed = self.team === 'red';
-        return {
-            moveX: Math.tanh(raw[0]) * (isRed ? 1 : -1),
-            moveY: Math.tanh(raw[1]),
-            charge: RLPolicy.sigmoid(raw[2]) * 0.95,
-            kick: Math.random() < RLPolicy.sigmoid(raw[3]),
-            pull: Math.random() < RLPolicy.sigmoid(raw[4]),
-        };
-    }
-}
-
-function playMatches(makeA, makeB, n) {
-    const res = { win: 0, draw: 0, loss: 0, gf: 0, ga: 0, points: 0 };
-    const steps = Math.round(120000 / 33.34);
-    for (let i = 0; i < n; i++) {
-        const env = new HeadlessEnv1v1(Object.assign({}, MATCH_ENV, { maxSteps: steps, randomKickoff: false }));
-        env.reset();
-        const aRed = i % 2 === 0;
-        const A = makeA(), B = makeB();
-        const pa = aRed ? env.red : env.blue, pb = aRed ? env.blue : env.red;
-        for (let t = 0; t < steps; t++) {
-            const aa = A.act ? A.act(pa, pb, env) : ruleAct(A, pa, pb, env);
-            const bb = B.act ? B.act(pb, pa, env) : ruleAct(B, pb, pa, env);
-            env.step(aRed ? aa : bb, aRed ? bb : aa);
-        }
-        const gf = aRed ? env.scoreRed : env.scoreBlue, ga = aRed ? env.scoreBlue : env.scoreRed;
-        res.gf += gf; res.ga += ga;
-        if (gf > ga) res.win++; else if (gf < ga) res.loss++; else res.draw++;
-    }
-    res.points = (res.win + 0.5 * res.draw) / n;
-    return res;
-}
-
-// The rule AI moves the player itself; capture its input as an env action.
-function ruleAct(ai, self, opp, env) {
-    let mx = 0, my = 0;
-    const applyInput = self.applyInput;
-    self.applyInput = (x, y) => { mx = x; my = y; };
-    let r;
-    try {
-        r = ai.update(self, env.ball, env.field, [self], [opp], 33.34, null);
-    } finally {
-        self.applyInput = applyInput;
-    }
-    return { moveX: mx, moveY: my, kick: !!r.kick, charge: r.chargeRatio || 0.3, pull: false };
 }
 
 // --- Helpers ------------------------------------------------------------------------

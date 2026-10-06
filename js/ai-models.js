@@ -1,9 +1,11 @@
 // Trained AI models that ship with the game, plus skills the player has
 // trained further in the AI Lab.
 //
-//   models/expert.json   the AI behind Expert difficulty: either one
-//                        full-match policy ({ type: 'match', policy }) or the
-//                        coach driving the four skills ({ type: 'skills' })
+//   models/expert.json   the AI behind Expert difficulty: one full-match
+//                        policy ({ type: 'match', policy }), the coach driving
+//                        the four skills ({ type: 'skills' }), or a full-match
+//                        policy with some skills taking over in their own
+//                        situations ({ type: 'hybrid', policy, skills: [...] })
 //   models/skills.json   the four skill policies and their drill success rates
 //
 // window.AIModels:
@@ -67,7 +69,11 @@
         if (expert.type === 'skills') return skillsAgent();
         if (!expertFactory) {
             try {
-                expertFactory = RLSkills.MatchAgent.factory(expert);
+                expertFactory = expert.type === 'hybrid'
+                    ? RLSkills.SkillAgent.factory(
+                        { skills: Object.fromEntries(SKILLS.map(n => [n, bundledSkill(n)]).filter(([, m]) => m)) },
+                        { base: expert, only: expert.skills })
+                    : RLSkills.MatchAgent.factory(expert);
             } catch (e) {
                 console.warn('[AIModels] expert model unusable', e);
                 return null;

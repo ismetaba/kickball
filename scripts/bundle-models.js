@@ -13,6 +13,8 @@
 // --expert match   Expert plays the full-match policy given by --match
 //                  (--threshold: kick/pull only when p > 0.5 instead of sampled)
 // --expert skills  Expert is the coach driving the four skills
+// --expert hybrid  the --match policy plays, except in the situations the
+//                  coach gives to the skills listed in --use (e.g. defend,shoot)
 const fs = require('fs');
 const path = require('path');
 const { SKILLS, packPolicy } = require('../js/rl/skills');
@@ -38,11 +40,14 @@ write('skills.json', { kind: 'kickzone-skills', version: 1, createdAt: new Date(
 
 const expertKind = args.expert || 'skills';
 let expert;
-if (expertKind === 'match') {
-    if (!args.match) throw new Error('--expert match needs --match <checkpoint>');
+if (expertKind === 'match' || expertKind === 'hybrid') {
+    if (!args.match) throw new Error(`--expert ${expertKind} needs --match <checkpoint>`);
     const m = JSON.parse(fs.readFileSync(args.match, 'utf8'));
+    const use = expertKind === 'hybrid' ? (args.use || '').split(',').filter(Boolean) : undefined;
+    if (use && (!use.length || use.some(s => !SKILLS.includes(s)))) throw new Error('--use needs skills from ' + SKILLS.join(','));
     expert = {
-        kind: 'kickzone-expert', version: 1, type: 'match',
+        kind: 'kickzone-expert', version: 1, type: expertKind,
+        skills: use,
         threshold: !!args.threshold,
         generation: m.generation, eval: m.eval,
         createdAt: new Date().toISOString(),
@@ -51,7 +56,7 @@ if (expertKind === 'match') {
 } else if (expertKind === 'skills') {
     expert = { kind: 'kickzone-expert', version: 1, type: 'skills', createdAt: new Date().toISOString() };
 } else {
-    throw new Error('--expert must be match or skills');
+    throw new Error('--expert must be match, skills or hybrid');
 }
 write('expert.json', expert);
 

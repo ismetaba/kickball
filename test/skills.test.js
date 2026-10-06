@@ -137,3 +137,26 @@ test('a packed policy decodes to (almost) the same network', () => {
     const b = Array.from(q.forward(x).raw);
     for (let i = 0; i < a.length; i++) assert.ok(Math.abs(a[i] - b[i]) < 1e-2, `output ${i}: ${a[i]} vs ${b[i]}`);
 });
+
+test('a hybrid agent lets the base model play except in its skills\' situations', () => {
+    Physics.dtRatio = 1.2;
+    const forward = constantPolicy({ moveX: 1 });
+    const backward = constantPolicy({ moveX: -1 });
+    const make = S.SkillAgent.factory({ skills: { defend: backward } }, { base: forward, only: ['defend'] });
+    const agent = make();
+    const red = new Player(atProgress(0.3), goalCY + 150, 'red');
+    const blue = new Player(atProgress(0.9), goalCY + 150, 'blue');
+    // Our ball in our half: the coach says dribble, which isn't in the hybrid -> base model
+    const ball = new Ball(atProgress(0.32), goalCY + 150);
+    agent.update(red, ball, field, [red], [blue], 16.67);
+    assert.equal(agent.skill, 'dribble');
+    assert.ok(red.vx > 0, 'base model moved forward');
+    // A shot on our goal: defend takes over
+    const shot = new Ball(atProgress(0.2), goalCY);
+    shot.vx = -12;
+    const agent2 = make();
+    const red2 = new Player(atProgress(0.3), goalCY + 150, 'red');
+    agent2.update(red2, shot, field, [red2], [blue], 16.67);
+    assert.equal(agent2.skill, 'defend');
+    assert.ok(red2.vx < 0, 'defend skill moved back');
+});
