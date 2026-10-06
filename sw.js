@@ -5,7 +5,7 @@
 // hits while offline. Install uses allSettled rather than cache.addAll() so
 // that a single missing/renamed asset can never reject the whole install and
 // silently disable offline support (the bug that previously shipped).
-const CACHE_NAME = 'kickzone-v4';
+const CACHE_NAME = 'kickzone-v5';
 const ASSETS = [
   '/',
   '/index.html',
@@ -23,19 +23,27 @@ const ASSETS = [
   '/js/rl/encoder2v2.js?v=1',
   '/js/rl/policy.js?v=10',
   '/js/rl/league.js?v=10',
-  '/js/rl/trainer.js?v=12',
+  '/js/rl/trainer.js?v=13',
   '/js/rl/runtime.js?v=10',
   '/js/rl/runtime2v2.js?v=1',
   '/js/rl/orchestrator.js?v=18',
   '/js/rl/orchestrator2v2.js?v=2',
+  '/js/rl/env.js?v=1',
+  '/js/rl/drills.js?v=1',
+  '/js/rl/skills.js?v=1',
+  // Shipped AI models (fetched by js/ai-models.js)
+  '/models/expert.json',
+  '/models/skills.json',
   // Client app
+  '/js/ai-models.js?v=1',
+  '/js/skill-lab.js?v=1',
   '/js/audio.js?v=5',
   '/js/renderer.js?v=23',
-  '/js/game.js?v=36',
+  '/js/game.js?v=37',
   '/js/netplay.js?v=2',
   '/js/p2p.js?v=4',
   '/js/controls.js?v=25',
-  '/js/ui.js?v=28',
+  '/js/ui.js?v=29',
   '/js/main.js?v=23',
   // Icons
   '/icons/icon-192.png',

@@ -81,10 +81,15 @@ const DEFAULTS = {
 
 // Yield to the event loop so the UI can process clicks/renders. MessageChannel
 // is faster and lower-overhead than setTimeout(0) (which has a 4ms minimum in
-// browsers); typical yield cost is <0.1ms.
+// browsers); typical yield cost is <0.1ms. Node (training scripts, tests) uses
+// setImmediate instead: an open MessageChannel would keep the process alive.
 let _yieldChannel = null;
 function yieldToUI() {
     return new Promise(resolve => {
+        if (typeof setImmediate === 'function') {
+            setImmediate(resolve);
+            return;
+        }
         if (typeof MessageChannel === 'undefined') {
             setTimeout(resolve, 0);
             return;
