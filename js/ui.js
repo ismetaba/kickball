@@ -285,6 +285,7 @@ class UI {
         if (this._session) {
             this._session.destroy();
             this._session = null;
+            this.p2p.matchEnded(); // host left mid-match: reopen the room
         }
         this._stopNetHud();
         this._showWaiting(false);
@@ -412,14 +413,15 @@ class UI {
                 if (btn) { btn.disabled = false; btn.textContent = 'JOIN'; }
                 return;
             }
-            // Mid-match or in a room: the room is gone (e.g. host left)
-            if (this.game.isRunning || this._isP2PRoom) {
-                this._showToast(msg || 'Disconnected from room');
-                this._teardownMatch();
-                this.showScreen('menu');
-            } else {
-                this._showToast(msg || 'Connection error');
-            }
+            // Anything else (e.g. "Team size too small") is just a notice
+            this._showToast(msg || 'Connection error');
+        };
+
+        this.p2p.onRoomClosed = (msg) => {
+            if (!this.game.isRunning && !this._isP2PRoom) return;
+            this._showToast(msg || 'Disconnected from room');
+            this._teardownMatch();
+            this.showScreen('menu');
         };
 
         this.p2p.onDisconnected = () => {
@@ -502,6 +504,7 @@ class UI {
         const mySlot = assign.get(this.p2p.playerId);
         if (mySlot === undefined) {
             this._showToast('Could not start match');
+            this.p2p.matchEnded();
             return;
         }
 
@@ -603,7 +606,10 @@ class UI {
                 humanSlots: cfg.humanSlots,
                 mySlot: cfg.mySlot,
             });
-            this.game.onMatchEnd = () => session.linger();
+            this.game.onMatchEnd = () => {
+                session.linger();
+                this.p2p.matchEnded();
+            };
             session.start();
             this._ensureControls();
             this._startNetHud();

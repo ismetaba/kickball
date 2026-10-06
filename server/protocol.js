@@ -42,6 +42,8 @@ const MSG = {
     P2P_RELAY_GOAL: 'p2p_relay_goal',
     P2P_RELAY_END: 'p2p_relay_end',
     P2P_RELAY_INPUT: 'p2p_relay_input',
+    // Host -> server only: reopen the room for joins after the match ends.
+    P2P_MATCH_ENDED: 'p2p_match_ended',
 };
 
 const ROOM_STATE = {

@@ -31,7 +31,8 @@ class P2PNetwork {
         // Signaling / room callbacks
         this.onConnected = null;
         this.onDisconnected = null;
-        this.onError = null;
+        this.onError = null;        // server error message (e.g. join refused)
+        this.onRoomClosed = null;   // the room is gone (host left)
         this.onRoomCreated = null;
         this.onRoomJoined = null;
         this.onRoomUpdate = null;
@@ -167,6 +168,12 @@ class P2PNetwork {
         this._send({ t: 'start_p2p_match', d: { isP2P: true } });
     }
 
+    // Host: the match is over — the server reopens the room for joins and
+    // accepts the next start.
+    matchEnded() {
+        if (this.isHost) this._send({ t: 'p2p_match_ended', d: {} });
+    }
+
     // --- Signaling Message Handling ---
     _handleSignalingMessage(msg) {
         // Drop malformed frames before they can throw in the switch arms
@@ -204,7 +211,7 @@ class P2PNetwork {
                 if (msg.d.hostLeft) {
                     // Host disconnected — game over
                     this._closeAllPeers();
-                    if (this.onError) this.onError('Host disconnected');
+                    if (this.onRoomClosed) this.onRoomClosed('Host disconnected');
                 } else {
                     this._knownPeers.delete(msg.d.peerId);
                     this._closePeer(msg.d.peerId);
@@ -529,7 +536,7 @@ class P2PNetwork {
             if (this.onPeerDisconnected) this.onPeerDisconnected({ peerId });
         } else if (this.roomCode) {
             this._closeAllPeers();
-            if (this.onError) this.onError('Host left the room');
+            if (this.onRoomClosed) this.onRoomClosed('Host left the room');
         }
     }
 
