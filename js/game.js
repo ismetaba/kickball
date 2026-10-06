@@ -33,7 +33,7 @@ const _hashF64 = new Float64Array(1);
 const _hashU32 = new Uint32Array(_hashF64.buffer);
 function hashValue(h, v) {
     if (typeof v === 'number') {
-        _hashF64[0] = v;
+        _hashF64[0] = v + 0; // -0 → +0: snapshots travel as JSON, which drops the sign
         h = Math.imul(h ^ _hashU32[0], 0x01000193);
         return Math.imul(h ^ _hashU32[1], 0x01000193);
     }
@@ -122,6 +122,9 @@ class Game {
         this.isLockstep = false;
         this.netplay = null;
         this.onMatchEnd = null;
+        // Online: kickChargeStart of the press each scheduled tick was
+        // sampled from (see _clearSpentLocalCharge)
+        this._samplePress = new Float64Array(1024).fill(-1);
 
         // Stats
         this.stats = {
@@ -466,12 +469,38 @@ class Game {
         this._beginLoop();
     }
 
+    // Every Math.pow (base, exponent) pair the simulation can evaluate in a
+    // match with these settings, computed on this device. The host sends its
+    // table to the guests so all phones use identical values.
+    buildPowTable(settings) {
+        const field = new Field(this.VIRTUAL_W, this.VIRTUAL_H, settings.map || 'classic');
+        const base = this._basePhysics || { FRICTION: Physics.FRICTION, BALL_FRICTION: Physics.BALL_FRICTION };
+        // Same expressions as applyMapPhysics / update / _applyHumanInput
+        const friction = 1 - (1 - base.FRICTION) * field.playerFrictionMod;
+        const ballFriction = 1 - (1 - base.BALL_FRICTION) * field.frictionMod;
+        const out = [];
+        for (const timeScale of [1.0, 0.3]) {
+            const e = timeScale * this._baseGameSpeed;
+            for (const b of [friction, ballFriction, 0.97, 0.985]) out.push([b, e, Math.pow(b, e)]);
+            const maxTicks = Math.ceil(KICK_CHARGE_MS / TICK_MS) + 1;
+            for (let k = 1; k <= maxTicks; k++) {
+                const ratio = Math.min(k * TICK_MS / KICK_CHARGE_MS, 1);
+                const b = 1 - ratio * 0.015;
+                out.push([b, e, Math.pow(b, e)]);
+            }
+            const dt = TICK_MS * timeScale;
+            out.push([0.997, dt, Math.pow(0.997, dt)]);
+        }
+        return out;
+    }
+
     // Online lockstep: every peer calls this with the exact same config
     // (from the host's start message), so the worlds start bit-identical.
     //   cfg.settings   — host's match settings
     //   cfg.seed       — shared RNG seed
     //   cfg.humanSlots — player indices driven by remote/local humans
     //   cfg.mySlot     — the player index this device controls
+    //   cfg.powTable   — the host's buildPowTable() result
     startLockstepMatch(cfg) {
         this.settings = { ...this.settings, ...cfg.settings };
         this.practiceMode = false;
@@ -481,6 +510,8 @@ class Game {
         this.rng.seed(cfg.seed);
 
         this._prepareField();
+        if (cfg.powTable) Physics.importPowTable(cfg.powTable);
+        this._samplePress.fill(-1);
         this._buildPlayers(new Set(cfg.humanSlots));
         this._controlled = new Map();
         for (const slot of cfg.humanSlots) this._controlled.set(slot, this.players[slot]);
@@ -803,8 +834,9 @@ class Game {
                     this.ball.vx += n.x * pullStrength;
                     this.ball.vy += n.y * pullStrength;
                     // Slow the ball while pulling (creates a "catching" feel)
-                    this.ball.vx *= Math.pow(0.985, Physics.dtRatio);
-                    this.ball.vy *= Math.pow(0.985, Physics.dtRatio);
+                    const drag = Physics.dpow(0.985, Physics.dtRatio);
+                    this.ball.vx *= drag;
+                    this.ball.vy *= drag;
                 }
             }
         }
@@ -872,11 +904,7 @@ class Game {
                     p.chargeTicks = 0;
                     p.kickChargeRatio = 0;
                     p.chargeLock = true;
-                    if (p === this.humanPlayer) {
-                        this.input.kickCharging = false;
-                        this.input.kickRelease = false;
-                        this.input.kickChargeTime = 0;
-                    }
+                    if (p === this.humanPlayer) this._clearSpentLocalCharge();
                 }
             }
 
@@ -1088,7 +1116,7 @@ class Game {
             player.chargeTicks++;
             player.kickChargeRatio = Math.min(player.chargeTicks * TICK_MS / KICK_CHARGE_MS, 1);
             if (canAct) {
-                const slowFactor = Math.pow(1 - player.kickChargeRatio * 0.015, Physics.dtRatio);
+                const slowFactor = Physics.dpow(1 - player.kickChargeRatio * 0.015, Physics.dtRatio);
                 player.vx *= slowFactor;
                 player.vy *= slowFactor;
             }
@@ -1125,6 +1153,18 @@ class Game {
             return next;
         }
         return player;
+    }
+
+    // The local button's charge was just spent by an auto-kick: stop showing
+    // it and make the release a no-op (as offline). Online the simulation
+    // runs a few ticks behind the button, so only do it if the button is
+    // still held from the same press that produced this tick's input.
+    _clearSpentLocalCharge() {
+        const inp = this.input;
+        if (this.isLockstep && this._samplePress[this.tickCount & 1023] !== inp.kickChargeStart) return;
+        inp.kickCharging = false;
+        inp.kickRelease = false;
+        inp.kickChargeTime = 0;
     }
 
     _onKick(player, cr, shakeScale, flashScale) {
@@ -1248,7 +1288,13 @@ class Game {
         if (this._dom.timer) this._dom.timer.style.color = '';
         Sound.stopMusic();
         Sound.whistle(true);
+        if (this._dom.resultTitle) this._dom.resultTitle.textContent = '';
+        this.showResult();
+        if (this.onMatchEnd) this.onMatchEnd();
+    }
 
+    // Fill in and show the result overlay from the current scores
+    showResult() {
         const resultOverlay = this._dom.resultOverlay;
         const title = this._dom.resultTitle;
         const score = this._dom.resultScore;
@@ -1272,13 +1318,13 @@ class Game {
                 }
                 Physics.GAME_SPEED = this._baseGameSpeed;
             } else if (localScore > remoteScore) {
+                if (title.textContent !== 'YOU WIN!') this._setTimeout(() => Sound.win(), 400);
                 title.textContent = 'YOU WIN!';
                 title.style.color = '#4caf50';
-                this._setTimeout(() => Sound.win(), 400);
             } else if (remoteScore > localScore) {
+                if (title.textContent !== 'YOU LOSE') this._setTimeout(() => Sound.lose(), 400);
                 title.textContent = 'YOU LOSE';
                 title.style.color = '#e94560';
-                this._setTimeout(() => Sound.lose(), 400);
             } else {
                 title.textContent = 'DRAW';
                 title.style.color = '#53d8fb';
@@ -1293,7 +1339,6 @@ class Game {
         if (stats) this._renderMatchStats(stats, redPoss, this.isSpectator);
 
         if (resultOverlay) resultOverlay.classList.remove('hidden');
-        if (this.onMatchEnd) this.onMatchEnd();
     }
 
     // Build red-blue "X - Y" score markup safely (no innerHTML with interpolation)

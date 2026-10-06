@@ -64,7 +64,7 @@ class Player {
 
         if (this.stunTimer > 0) {
             this.stunTimer -= dt;
-            const damping = Math.pow(0.997, dt);
+            const damping = Physics.dpow(0.997, dt);
             this.vx *= damping;
             this.vy *= damping;
             this.x += this.vx * s;
@@ -91,8 +91,9 @@ class Player {
             }
         }
 
-        this.vx *= Math.pow(Physics.FRICTION, s);
-        this.vy *= Math.pow(Physics.FRICTION, s);
+        const friction = Physics.dpow(Physics.FRICTION, s);
+        this.vx *= friction;
+        this.vy *= friction;
 
         const maxSpeed = this.getMaxSpeed();
         Physics.clampSpeed(this, maxSpeed);
@@ -270,8 +271,9 @@ class Ball {
             }
         }
 
-        this.vx *= Math.pow(Physics.BALL_FRICTION, s);
-        this.vy *= Math.pow(Physics.BALL_FRICTION, s);
+        const friction = Physics.dpow(Physics.BALL_FRICTION, s);
+        this.vx *= friction;
+        this.vy *= friction;
 
         if (Math.abs(this.spin) > 0.01) {
             const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
@@ -283,7 +285,7 @@ class Ball {
                 this.vx += perpX * this.spin * 0.1 * s;
                 this.vy += perpY * this.spin * 0.1 * s;
             }
-            this.spin *= Math.pow(0.97, s);
+            this.spin *= Physics.dpow(0.97, s);
         }
 
         Physics.clampSpeed(this, Physics.MAX_BALL_SPEED);

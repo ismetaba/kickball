@@ -1,24 +1,40 @@
 // A single game room with lobby + match lifecycle
 const { ROOM_STATE, MSG } = require('./protocol');
 const GameSimulation = require('./game-simulation');
+const GameConstants = require('./../shared/constants');
+
+// Coerce client-supplied room settings to known-good values. Everything here
+// drives timers and array sizing in the simulation, so unvalidated values are
+// a robustness/DoS hazard — reject anything not on the whitelist.
+function sanitizeSettings(settings = {}) {
+    const teamSize = Number(settings.teamSize);
+    const duration = Number(settings.duration);
+    const goalLimit = Number(settings.goalLimit);
+    return {
+        teamSize: Number.isInteger(teamSize) && teamSize >= 1 && teamSize <= GameConstants.MAX_TEAM_SIZE
+            ? teamSize : 2,
+        duration: GameConstants.DURATIONS.includes(duration) ? duration : 180,
+        goalLimit: GameConstants.GOAL_LIMITS.includes(goalLimit) ? goalLimit : 5,
+        powerups: settings.powerups !== false,
+        map: GameConstants.MAPS[settings.map] ? settings.map : 'classic',
+    };
+}
 
 class GameRoom {
     constructor(roomCode, hostId, hostWs, hostName, settings) {
         this.roomCode = roomCode;
         this.state = ROOM_STATE.WAITING;
-        this.settings = {
-            teamSize: settings.teamSize || 2,
-            duration: settings.duration || 180,
-            goalLimit: settings.goalLimit || 5,
-            powerups: settings.powerups !== false,
-            map: settings.map || 'classic',
-        };
+        this.settings = sanitizeSettings(settings);
         this.createdAt = Date.now();
         this.hostId = hostId;
 
         // Connected players: playerId -> { ws, name, team, slotIndex }
         this.players = new Map();
         this.simulation = null;
+
+        // Optional hook fired once when the match ends naturally, so the
+        // RoomManager can release this room's resources promptly.
+        this.onFinished = null;
 
         // Add host
         this.players.set(hostId, { ws: hostWs, name: hostName, team: 'red', slotIndex: null });
@@ -117,6 +133,7 @@ class GameRoom {
         this.simulation.onMatchEnd = (data) => {
             this.state = ROOM_STATE.FINISHED;
             this._broadcastToAll(MSG.MATCH_END, data);
+            if (this.onFinished) this.onFinished();
         };
 
         this.simulation.onEvent = (event) => {
@@ -125,6 +142,14 @@ class GameRoom {
 
         // Tell clients the match is starting with their slot info
         for (const [playerId, playerData] of this.players) {
+            // Defense-in-depth: a player with no simulation slot (e.g. the room
+            // somehow over-filled a team) must not be told the match started —
+            // they'd be an invisible, uncontrollable non-participant. Notify and
+            // skip them instead.
+            if (playerData.slotIndex === null) {
+                this._sendTo(playerId, MSG.ERROR, { message: 'No slot available for this match' });
+                continue;
+            }
             this._sendTo(playerId, MSG.MATCH_STARTING, {
                 yourSlot: playerData.slotIndex,
                 settings: this.settings,

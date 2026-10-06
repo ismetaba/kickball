@@ -17,6 +17,7 @@
 
 import CoreGraphics
 import Combine
+import QuartzCore   // CACurrentMediaTime
 
 enum Difficulty: String, CaseIterable, Identifiable {
     case normal, expert
@@ -37,7 +38,12 @@ final class GameEngine: ObservableObject {
     // MARK: - Public observable state
     @Published private(set) var redScore: Int = 0
     @Published private(set) var blueScore: Int = 0
-    @Published private(set) var timeRemainingMs: Double = 180_000
+    // Whole-seconds clock for the HUD. The high-frequency `timeRemainingMs` is
+    // deliberately NOT @Published — publishing it every tick forced a full
+    // SwiftUI body re-evaluation ~60x/sec. Views bind to `displaySeconds`, which
+    // changes only ~1x/sec.
+    @Published private(set) var displaySeconds: Int = 180
+    private(set) var timeRemainingMs: Double = 180_000
     @Published private(set) var isRunning: Bool = false
     @Published private(set) var isPaused: Bool = false
     @Published private(set) var matchOver: Bool = false
@@ -49,6 +55,11 @@ final class GameEngine: ObservableObject {
     private(set) var players: [Player] = []
     private(set) var humanPlayer: Player? = nil
 
+    // Per-team roster caches, rebuilt only when the roster changes (match start).
+    // Avoids allocating two fresh arrays per AI per tick in the step loop.
+    private var redPlayers: [Player] = []
+    private var bluePlayers: [Player] = []
+
     // Input from controls layer (set externally)
     var humanInputDir: Vec2 = .zero
     var humanIsCharging: Bool = false
@@ -59,8 +70,8 @@ final class GameEngine: ObservableObject {
     // AI bindings
     private var aiBindings: [(player: Player, ai: AgentController)] = []
 
-    // Settings + clock
-    private(set) var settings: MatchSettings
+    // Settings + clock. `settings` is set by the view before startMatch().
+    var settings: MatchSettings
     private var lastTickTime: CFTimeInterval = 0
     private var goalCelebrationRemainingMs: Double = 0
     private var kickoffActive: Bool = false
@@ -108,9 +119,14 @@ final class GameEngine: ObservableObject {
             aiBindings.append((p, makeAI()))
         }
 
+        // Cache team rosters once (stable for the whole match).
+        redPlayers = players.filter { $0.team == .red }
+        bluePlayers = players.filter { $0.team == .blue }
+
         redScore = 0
         blueScore = 0
         timeRemainingMs = Double(settings.durationSeconds) * 1000
+        displaySeconds = settings.durationSeconds
         isRunning = true
         isPaused = false
         matchOver = false
@@ -152,13 +168,18 @@ final class GameEngine: ObservableObject {
             return
         }
 
-        // Match clock
+        // Match clock. Publish only the whole-seconds value (and only when it
+        // changes) so the HUD updates ~1x/sec instead of invalidating the view
+        // tree every frame.
         timeRemainingMs -= dtMs
         if timeRemainingMs <= 0 {
             timeRemainingMs = 0
+            if displaySeconds != 0 { displaySeconds = 0 }
             matchOver = true
             return
         }
+        let secs = Int(timeRemainingMs / 1000)   // floor, matches prior HUD display
+        if secs != displaySeconds { displaySeconds = secs }
 
         // 1. Human input → human player
         if let hp = humanPlayer, hp.stunMs <= 0, hp.powerUp != .frozen {
@@ -186,8 +207,8 @@ final class GameEngine: ObservableObject {
         for binding in aiBindings {
             let p = binding.player
             if p.stunMs > 0 || p.powerUp == .frozen { continue }
-            let mates = players.filter { $0.team == p.team }
-            let opps = players.filter { $0.team != p.team }
+            let mates = (p.team == .red) ? redPlayers : bluePlayers
+            let opps = (p.team == .red) ? bluePlayers : redPlayers
             let intent = binding.ai.update(player: p, ball: ball, field: field,
                                            teammates: mates, opponents: opps,
                                            dtMs: dtMs, dtRatio: dtRatio)

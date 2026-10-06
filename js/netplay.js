@@ -20,7 +20,7 @@
 //  * Desync safety net: the host publishes a state hash every 30 ticks; a
 //    guest that disagrees asks for the host's full state and re-simulates.
 
-const NETPLAY_PROTOCOL = 2;
+const NETPLAY_PROTOCOL = 3;
 
 class LockstepSession {
     // opts:
@@ -31,8 +31,11 @@ class LockstepSession {
     //   humanSlots  player indices controlled by humans (incl. mine)
     //   peerSlots   host only: Map(peerId -> slot)
     //   inputDelay  initial delay in ticks (same on every peer)
+    //   matchId     identifies this match (packets from a previous match
+    //               that are still in flight must not touch this one)
     constructor(opts) {
         this.game = opts.game;
+        this.matchId = (opts.matchId >>> 0) || 1;
         this.net = opts.net;
         this.isHost = opts.isHost;
         this.mySlot = opts.mySlot;
@@ -98,6 +101,7 @@ class LockstepSession {
         this.onStallChange = null;     // (isStalled) => void
         this.onConnectionLost = null;  // () => void
         this.onPeerSilent = null;      // host: (peerId) => void
+        this._finalTimer = null;
     }
 
     _addLink(peerId, slot) {
@@ -231,8 +235,10 @@ class LockstepSession {
         const target = tick + this.delay;
         const b = this.buf.get(this.mySlot);
         if (!b) return;
+        const g = this.game;
         while (this.nextLocalTick <= target) {
-            const v = LockstepSession.encode(this.game.sampleLocalInput());
+            g._samplePress[this.nextLocalTick & 1023] = g.input.kickCharging ? g.input.kickChargeStart : -1;
+            const v = LockstepSession.encode(g.sampleLocalInput());
             this._store(b, this.nextLocalTick, v);
             this.nextLocalTick++;
             this._localDirty = true;
@@ -322,7 +328,7 @@ class LockstepSession {
         if (now - this._resyncAskedAt < 2000) return;
         this._resyncAskedAt = now;
         console.warn(`[netplay] desync at tick ${t} — requesting host state`);
-        this.net.sendReliable('host', { k: 'rsq', t });
+        this.net.sendReliable('host', { k: 'rsq', m: this.matchId, t });
     }
 
     _applyResync(s) {
@@ -360,14 +366,16 @@ class LockstepSession {
     // --- Messages -------------------------------------------------------------
 
     handleReliable(peerId, msg) {
-        if (this.destroyed || !msg) return;
+        if (this.destroyed || !msg || msg.m !== this.matchId) return;
         if (msg.k === 'rsq' && this.isHost) {
             const now = performance.now();
             if (now - (this._lastResyncSent.get(peerId) || -Infinity) < 500) return;
             this._lastResyncSent.set(peerId, now);
-            if (this.game.isRunning) this.net.sendReliable(peerId, { k: 'rss', s: this.game.serializeSim() });
+            if (this.game.isRunning) this.net.sendReliable(peerId, { k: 'rss', m: this.matchId, s: this.game.serializeSim() });
         } else if (msg.k === 'rss' && !this.isHost) {
             this._applyResync(msg.s);
+        } else if (msg.k === 'end' && !this.isHost) {
+            this._onHostFinal(msg.s);
         } else if (msg.k === 'drop' && !this.isHost) {
             if (msg.slot === this.mySlot) {
                 // The host gave up on us (we were unreachable too long)
@@ -385,9 +393,10 @@ class LockstepSession {
     handleFast(peerId, view, o) {
         if (this.destroyed) return;
         const link = this.links.get(peerId);
-        if (!link || view.byteLength - o < 21) return;
+        if (!link || view.byteLength - o < 25) return;
         if (view.getUint8(o) !== 1) return;
-        o += 1;
+        if (view.getUint32(o + 1, true) !== this.matchId) return; // previous match
+        o += 5;
         const now = performance.now();
         const remoteTick = view.getInt32(o, true); o += 4;
         const remoteFrac = view.getUint8(o) / 32; o += 1;
@@ -427,7 +436,9 @@ class LockstepSession {
             const slot = view.getUint8(o);
             const t = view.getInt32(o + 1, true);
             o += 5;
-            if (t > (link.ack.get(slot) ?? -1)) link.ack.set(slot, t);
+            // Never trust an ack beyond what we have actually produced
+            const b = this.buf.get(slot);
+            if (b && t > (link.ack.get(slot) ?? -1) && t <= b.contig) link.ack.set(slot, t);
         }
 
         // Input runs
@@ -485,6 +496,7 @@ class LockstepSession {
         const g = this.game;
         let o = 0;
         dv.setUint8(o, 1); o += 1;
+        dv.setUint32(o, this.matchId, true); o += 4;
         dv.setInt32(o, g.tickCount, true); o += 4;
         dv.setUint8(o, Math.max(0, Math.min(255, Math.round((this.acc / TICK_MS) * 32)))); o += 1;
         dv.setInt16(o, Math.max(-32768, Math.min(32767, Math.round(link.adv * 64))), true); o += 2;
@@ -559,9 +571,42 @@ class LockstepSession {
         if (!this.buf.has(slot) || this.dropAt.has(slot)) return;
         const at = this.buf.get(slot).contig + 1;
         this.dropAt.set(slot, at);
-        for (const other of this.links.values()) {
-            this.net.sendReliable(other.peerId, { k: 'drop', slot, at });
-        }
+        const msg = { k: 'drop', m: this.matchId, slot, at };
+        // The dropped peer is told too, in case it is only unreachable for
+        // a while — it then leaves instead of waiting on a match it's not in.
+        this.net.sendReliable(peerId, msg);
+        for (const other of this.links.values()) this.net.sendReliable(other.peerId, msg);
+    }
+
+    // Host: the final score is authoritative. Guests normally finish on the
+    // same tick by themselves; if one diverged right at the end it adopts
+    // this result instead of showing a different one.
+    sendFinal() {
+        if (!this.isHost || this.destroyed) return;
+        const msg = { k: 'end', m: this.matchId, s: this.game.serializeSim() };
+        for (const link of this.links.values()) this.net.sendReliable(link.peerId, msg);
+    }
+
+    _onHostFinal(s) {
+        if (!s || this._finalTimer) return;
+        // Give our own simulation a moment to reach the final whistle
+        this._finalTimer = setTimeout(() => {
+            this._finalTimer = null;
+            const g = this.game;
+            if (this.destroyed) return;
+            const sameScore = g.redScore === s.sc[0] && g.blueScore === s.sc[1];
+            if (g.matchOver && sameScore) return;
+            Sound.suppressed = true;
+            g.renderer.suppressFx = true;
+            try {
+                g.restoreSim(s);
+            } finally {
+                Sound.suppressed = false;
+                g.renderer.suppressFx = false;
+            }
+            if (g.matchOver) g.showResult();
+            else g.endMatch();
+        }, 1000);
     }
 
     // Keep repairing lost packets for a moment after the final whistle so
@@ -594,6 +639,7 @@ class LockstepSession {
     destroy() {
         this.destroyed = true;
         if (this._lingerTimer) { clearInterval(this._lingerTimer); this._lingerTimer = null; }
+        if (this._finalTimer) { clearTimeout(this._finalTimer); this._finalTimer = null; }
         this.onStallChange = null;
         this.onConnectionLost = null;
     }

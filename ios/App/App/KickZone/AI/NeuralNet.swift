@@ -42,14 +42,21 @@ struct PolicyNet {
     /// mu_mvY, mu_chg, kick_logit, pull_logit).
     func forward(_ x: [Float]) -> [Float] {
         var h1 = [Float](repeating: 0, count: hidden)
+        var h2 = [Float](repeating: 0, count: hidden)
+        var out = [Float](repeating: 0, count: actor.outDim)
+        forward(x, h1: &h1, h2: &h2, out: &out)
+        return out
+    }
+
+    /// Allocation-free forward pass: writes the actor head into `out` using
+    /// caller-owned scratch buffers (h1/h2 sized `hidden`, out sized
+    /// `actor.outDim`). Identical math to `forward(_:)`.
+    func forward(_ x: [Float], h1: inout [Float], h2: inout [Float], out: inout [Float]) {
         l1.forward(x, into: &h1)
         for i in 0..<hidden where h1[i] < 0 { h1[i] = 0 }
-        var h2 = [Float](repeating: 0, count: hidden)
         l2.forward(h1, into: &h2)
         for i in 0..<hidden where h2[i] < 0 { h2[i] = 0 }
-        var out = [Float](repeating: 0, count: actor.outDim)
         actor.forward(h2, into: &out)
-        return out
     }
 
     /// Decode the actor outputs into a deterministic action.

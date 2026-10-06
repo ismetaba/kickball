@@ -21,6 +21,39 @@ const Physics = {
     POWER_KICK_FORCE: 9.8,
     PLAYER_ACCELERATION: 0.21,
 
+    // Math.pow is not required to round identically on every JS engine (an
+    // iPhone and an Android phone can disagree in the last bit), which is
+    // enough to desync online lockstep. Simulation code uses dpow(); online
+    // matches preload the host's values with importPowTable() so every peer
+    // multiplies by exactly the same numbers. Keys are exact doubles.
+    _powCache: new Map(),
+
+    dpow(base, exp) {
+        let byBase = this._powCache.get(exp);
+        if (!byBase) {
+            byBase = new Map();
+            this._powCache.set(exp, byBase);
+        }
+        let v = byBase.get(base);
+        if (v === undefined) {
+            v = Math.pow(base, exp);
+            byBase.set(base, v);
+        }
+        return v;
+    },
+
+    // entries: [[base, exp, value], ...]
+    importPowTable(entries) {
+        for (const [base, exp, value] of entries) {
+            let byBase = this._powCache.get(exp);
+            if (!byBase) {
+                byBase = new Map();
+                this._powCache.set(exp, byBase);
+            }
+            byBase.set(base, value);
+        }
+    },
+
     distance(a, b) {
         const dx = a.x - b.x;
         const dy = a.y - b.y;

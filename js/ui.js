@@ -285,6 +285,7 @@ class UI {
         if (this._session) {
             this._session.destroy();
             this._session = null;
+            this.p2p.matchEnded(); // host left mid-match: reopen the room
         }
         this._stopNetHud();
         this._showWaiting(false);
@@ -412,14 +413,15 @@ class UI {
                 if (btn) { btn.disabled = false; btn.textContent = 'JOIN'; }
                 return;
             }
-            // Mid-match or in a room: the room is gone (e.g. host left)
-            if (this.game.isRunning || this._isP2PRoom) {
-                this._showToast(msg || 'Disconnected from room');
-                this._teardownMatch();
-                this.showScreen('menu');
-            } else {
-                this._showToast(msg || 'Connection error');
-            }
+            // Anything else (e.g. "Team size too small") is just a notice
+            this._showToast(msg || 'Connection error');
+        };
+
+        this.p2p.onRoomClosed = (msg) => {
+            if (!this.game.isRunning && !this._isP2PRoom) return;
+            this._showToast(msg || 'Disconnected from room');
+            this._teardownMatch();
+            this.showScreen('menu');
         };
 
         this.p2p.onDisconnected = () => {
@@ -502,6 +504,7 @@ class UI {
         const mySlot = assign.get(this.p2p.playerId);
         if (mySlot === undefined) {
             this._showToast('Could not start match');
+            this.p2p.matchEnded();
             return;
         }
 
@@ -520,10 +523,13 @@ class UI {
         const inputDelay = measured ? LockstepSession.delayFor(oneWay, dev) : 4;
         const seed = ((Math.random() * 0x7ffffffe) | 0) + 1;
         const startIn = 300;
+        // The host's Math.pow results, so every phone simulates with
+        // bit-identical numbers even across different JS engines
+        const powTable = this.game.buildPowTable(settings);
 
         const startMsg = {
             k: 'ls_start', v: NETPLAY_PROTOCOL, seed, inputDelay, settings,
-            assign: [...assign], startIn,
+            assign: [...assign], startIn, powTable,
         };
         const peerSlots = new Map();
         for (const [peerId, slot] of assign) {
@@ -533,7 +539,7 @@ class UI {
         }
 
         this._launchMatch({
-            isHost: true, seed, inputDelay, settings,
+            isHost: true, seed, inputDelay, settings, powTable,
             humanSlots: [...assign.values()], mySlot, peerSlots,
         }, startIn);
     }
@@ -567,7 +573,7 @@ class UI {
         const oneWay = r && r.samples > 0 ? r.rtt / 2 : 0;
         this._launchMatch({
             isHost: false, seed: msg.seed, inputDelay: msg.inputDelay, settings: msg.settings,
-            humanSlots: [...assign.values()], mySlot,
+            powTable: msg.powTable, humanSlots: [...assign.values()], mySlot,
         }, Math.max(0, (msg.startIn || 0) - oneWay));
     }
 
@@ -580,6 +586,7 @@ class UI {
             humanSlots: cfg.humanSlots,
             peerSlots: cfg.peerSlots || new Map(),
             inputDelay: cfg.inputDelay,
+            matchId: cfg.seed,
         });
         session.onStallChange = (stalled) => this._showWaiting(stalled);
         session.onConnectionLost = () => {
@@ -602,8 +609,13 @@ class UI {
                 seed: cfg.seed,
                 humanSlots: cfg.humanSlots,
                 mySlot: cfg.mySlot,
+                powTable: cfg.powTable,
             });
-            this.game.onMatchEnd = () => session.linger();
+            this.game.onMatchEnd = () => {
+                session.linger();
+                session.sendFinal();
+                this.p2p.matchEnded();
+            };
             session.start();
             this._ensureControls();
             this._startNetHud();
