@@ -219,6 +219,7 @@ class UI {
 
         document.getElementById('btn-start-match').addEventListener('click', () => {
             Sound.uiStart();
+            this.game.settings.aiSource = null;   // the shipped AI, not an AI Lab model
             this.startGame();
         });
     }
@@ -740,6 +741,10 @@ class UI {
     // -------------------- AI Lab --------------------
     _initAILab() {
         if (this._aiLabInitialized) {
+            if (this._aiLabMode === 'skills') {
+                if (this._skillLab) this._skillLab.show();
+                return;
+            }
             this._refreshAILab();
             return;
         }
@@ -758,16 +763,29 @@ class UI {
         // Each mode has its own orchestrator; buttons route to the current one.
         this._aiLabMode = '1v1';
 
+        // Skills tab: drills for dribbling, defending, shooting and pulling
+        this._skillLab = (typeof SkillLab !== 'undefined' && window.AIModels) ? new SkillLab() : null;
+        if (this._skillLab) this._skillLab.init();
+
         // Mode tab switcher
         document.querySelectorAll('[data-mode]').forEach(btn => {
             btn.addEventListener('click', () => {
                 document.querySelectorAll('[data-mode]').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 this._aiLabMode = btn.dataset.mode;
+                const skills = this._aiLabMode === 'skills';
+                document.getElementById('ai-lab-match-panel').style.display = skills ? 'none' : 'flex';
+                document.getElementById('ai-lab-skills-panel').style.display = skills ? 'flex' : 'none';
+                const desc = document.getElementById('ai-lab-mode-desc');
+                if (skills) {
+                    if (desc) desc.textContent = 'Each skill has its own drill and its own model. Watch it play, then train it further here.';
+                    if (this._skillLab) this._skillLab.show();
+                    return;
+                }
+                if (this._skillLab) this._skillLab.hide();
                 // Lazy-create the right orchestrator for this mode
                 this._ensureCurrentOrch();
                 // Update mode description + phase button highlight + stats
-                const desc = document.getElementById('ai-lab-mode-desc');
                 if (desc) {
                     desc.textContent = this._aiLabMode === '1v1'
                         ? 'Train a 1v1 neural-network AI with PPO + League self-play. Your machine handles all training locally.'
@@ -855,9 +873,10 @@ class UI {
             e.target.value = '';
         });
         document.getElementById('btn-ai-lab-test').addEventListener('click', () => {
-            // Test match in the current mode's team size
+            // Test match against the model trained here, in the mode's team size
             this.game.settings.teamSize = (this._aiLabMode === '2v2') ? 2 : 1;
             this.game.settings.difficulty = 'expert';
+            this.game.settings.aiSource = 'lab-' + this._aiLabMode;
             this.game.settings.powerups = false;
             this.game.settings.map = 'classic';
             this.startGame();
@@ -869,7 +888,18 @@ class UI {
             this._setAILabStatus(this._aiLabMode + ' Reset', '#fc6');
             this._refreshAILab();
         });
+        document.getElementById('btn-skill-test').addEventListener('click', () => {
+            // 1v1 against the coach driving the skills as they are now
+            if (this._skillLab) this._skillLab.hide();
+            this.game.settings.teamSize = 1;
+            this.game.settings.difficulty = 'expert';
+            this.game.settings.aiSource = 'lab-skills';
+            this.game.settings.powerups = false;
+            this.game.settings.map = 'classic';
+            this.startGame();
+        });
         document.getElementById('btn-ai-lab-back').addEventListener('click', () => {
+            if (this._skillLab) this._skillLab.hide();
             this.showScreen('menu');
         });
 

@@ -10,9 +10,12 @@
 //   defend   keep a shot or an attacker out of your goal, then clear the ball
 //   shoot    score from the attacking half (levels 2–3: past a goalkeeper)
 //   pull     win a loose or carried ball, pulling it in once it is in range
+//            (pull is on cooldown in some episodes: the skill is "win the
+//            ball", with pull as its best tool when available)
 //
 // Level 1 has no opponent; levels 2 and 3 add a scripted one (slow, then
-// full speed).
+// full speed). In half of the level-3 episodes the opponent is the game's own
+// rule-based AIController instead, the same AI players face in matches.
 //
 // The agent is always red (attacking right). Observations, actions and
 // physics are exactly those of HeadlessEnv1v1 (the encoder mirrors blue's
@@ -22,20 +25,22 @@
 // the skill's metric (evaluate()); collectRollout() + computeEpisodicGAE()
 // produce PPO batches.
 (function(root, factory) {
-    let Physics, RLEnv, RLEncoder;
+    let Physics, RLEnv, RLEncoder, AIController;
     if (typeof require !== 'undefined' && typeof module !== 'undefined' && module.exports) {
         Physics = require('../../shared/physics');
         RLEnv = require('./env');
         RLEncoder = require('./encoder');
+        AIController = require('../../shared/ai');
     } else {
         Physics = root.Physics;
         RLEnv = root.RLEnv;
         RLEncoder = root.RLEncoder;
+        AIController = root.AIController;
     }
-    const exp = factory(Physics, RLEnv, RLEncoder);
+    const exp = factory(Physics, RLEnv, RLEncoder, AIController);
     if (typeof module !== 'undefined' && module.exports) module.exports = exp;
     else root.RLDrills = exp;
-})(typeof self !== 'undefined' ? self : this, function(Physics, RLEnv, RLEncoder) {
+})(typeof self !== 'undefined' ? self : this, function(Physics, RLEnv, RLEncoder, AIController) {
 
 const { HeadlessEnv1v1 } = RLEnv;
 
@@ -48,9 +53,15 @@ class DrillEnv extends HeadlessEnv1v1 {
     constructor(skill, opts = {}) {
         const drill = DRILLS[skill];
         if (!drill) throw new Error('Unknown drill: ' + skill);
-        // Pull is part of every skill; super-kick and kick-as-body-check stay
-        // off like in match Phase 1 (see env.js) unless opts turn them on.
-        super(Object.assign({ map: 'classic', powerUps: false, disablePull: false }, opts));
+        // Full game mechanics, as in a real match: pull, the homing super-kick
+        // (charge > 0.8) and kick-as-body-check are all on.
+        super(Object.assign({
+            map: 'classic',
+            powerUps: false,
+            disablePull: false,
+            disableSuperKick: false,
+            disableKickPlayer: false,
+        }, opts));
         this.skill = skill;
         this.drill = drill;
         this.level = opts.level || 1;
@@ -58,6 +69,7 @@ class DrillEnv extends HeadlessEnv1v1 {
         this.g = fieldGeometry(this.field);
         // Ball at the player's feet: close enough to keep pushing or kick
         this.controlDist = this.red.radius + this.ball.radius + 20;
+        this.ruleOpponent = null; // AIController playing blue (some level-3 episodes)
         this.active = false;      // an episode is in progress
         this.outcome = null;
         this.success = false;
@@ -99,6 +111,8 @@ class DrillEnv extends HeadlessEnv1v1 {
         };
         this.d = { lastTouch: null, pullsUsed: 0, wastedPulls: 0 };
         this.maxSteps = this.drill.maxSteps[this.level - 1];
+        this.ruleOpponent = this.level === MAX_LEVEL && this.rng() < 0.5
+            ? new AIController('normal') : null;
         this.drill.setup(this, this.level);
         this.active = true;
         this._initStacks();
@@ -115,7 +129,9 @@ class DrillEnv extends HeadlessEnv1v1 {
         const red = this.red;
         const pullReady = red.pullCooldown <= 0 && !red.pullActive;
         const distBefore = Physics.distance(red, this.ball);
-        const opp = this.level > 1 ? this.drill.opponent(this, this.level) : IDLE;
+        let opp = IDLE;
+        if (this.ruleOpponent) opp = ruleBotAction(this);
+        else if (this.level > 1) opp = this.drill.opponent(this, this.level);
         const sim = this._simulate(action, opp);
         this.steps++;
         if (sim.redTouched) this.d.lastTouch = 'red';
@@ -301,7 +317,7 @@ const DRILLS = {
             const back = Math.atan2(ball.y - g.goalCY, ball.x - g.right);
             for (let tries = 0; tries < 20; tries++) {
                 const a = back + (rng() * 2 - 1) * (110 * Math.PI / 180);
-                const d = lerp(50, 200, rng());
+                const d = lerp(50, 300, rng());
                 red.x = clamp(ball.x + Math.cos(a) * d, g.fx + 30, g.right - 30);
                 red.y = clamp(ball.y + Math.sin(a) * d, g.fy + 30, g.fy + g.fh - 30);
                 if (Physics.distance(red, ball) > red.radius + ball.radius + 6) break;
@@ -345,18 +361,19 @@ const DRILLS = {
     },
 
     pull: {
-        maxSteps: [90, 120, 120],           // 3 s for a loose ball, 4 s against a carrier
+        maxSteps: [120, 120, 120],          // 4 s
         successOutcomes: ['won'],
         wastedPullPenalty: 0.3,
         setup(env, level) {
             const { g, rng, red, ball, blue } = env;
-            red.pullCooldown = 0;
+            // Usually ready; sometimes the ball has to be won without it
+            red.pullCooldown = rng() < 0.25 ? lerp(1500, red.pullCooldownTime, rng()) : 0;
             if (level === 1) {
-                // A loose ball 70–210 away, usually rolling away from the agent
+                // A loose ball 70–450 away, usually rolling away from the agent
                 red.x = g.fx + g.fw * lerp(0.15, 0.85, rng());
                 red.y = lerp(g.fy + 60, g.fy + g.fh - 60, rng());
                 const a = rng() * Math.PI * 2;
-                const d = lerp(70, 210, rng());
+                const d = lerp(70, 450, rng());
                 ball.x = clamp(red.x + Math.cos(a) * d, g.fx + 40, g.right - 40);
                 ball.y = clamp(red.y + Math.sin(a) * d, g.fy + 40, g.fy + g.fh - 40);
                 if (rng() < 0.7) {
@@ -375,7 +392,7 @@ const DRILLS = {
                 env.d.aimY = lerp(g.goalTop + 30, g.goalBot - 30, rng());
                 for (let tries = 0; tries < 20; tries++) {
                     const a = rng() * Math.PI * 2;
-                    const d = lerp(100, 200, rng());
+                    const d = lerp(100, 350, rng());
                     red.x = clamp(ball.x + Math.cos(a) * d, g.fx + 30, g.right - 30);
                     red.y = clamp(ball.y + Math.sin(a) * d, g.fy + 30, g.fy + g.fh - 30);
                     if (Physics.distance(red, blue) > red.radius + blue.radius + 40
@@ -408,6 +425,24 @@ const DRILLS = {
 };
 
 // --- Scripted opponents (blue) ------------------------------------------------
+
+// The game's AIController playing blue. It moves the player itself, so
+// capture its input and hand it to the env as an action (like worker.js).
+const _ruleRng = { next: null };
+function ruleBotAction(env) {
+    const { blue, red, ball, field } = env;
+    let mx = 0, my = 0;
+    const applyInput = blue.applyInput;
+    blue.applyInput = (x, y) => { mx = x; my = y; };
+    _ruleRng.next = env.rng;              // seeded, so evaluations replay exactly
+    let r;
+    try {
+        r = env.ruleOpponent.update(blue, ball, field, [blue], [red], 33.34, _ruleRng);
+    } finally {
+        blue.applyInput = applyInput;
+    }
+    return { moveX: mx, moveY: my, kick: r.kick, charge: r.chargeRatio || 0.3, pull: false };
+}
 
 // Runs at the ball (aiming slightly ahead of it); any touch steals it.
 function pressBot(env, speed) {
@@ -626,7 +661,11 @@ function seededRandom(seed) {
     };
 }
 
-// Deterministic (mean) action of a policy for the drill's agent.
+// A policy playing the drill's agent: mean movement and charge, but kick and
+// pull drawn from their probabilities, as during training. (Thresholding
+// them at 0.5 instead breaks policies that learned "kick with p = 0.3 each
+// step near the ball", which fire within a few steps when sampled.) Draws
+// come from the env's seeded rng so evaluations replay exactly.
 function policyActor(policy) {
     return (env) => {
         const { raw } = policy.forward(env.stackRed.get());
@@ -634,8 +673,8 @@ function policyActor(policy) {
             moveX: Math.tanh(raw[0]),
             moveY: Math.tanh(raw[1]),
             charge: sigmoid(raw[2]) * 0.95,   // same squash as worker.js
-            kick: sigmoid(raw[3]) > 0.5,
-            pull: sigmoid(raw[4]) > 0.5,
+            kick: env.rng() < sigmoid(raw[3]),
+            pull: env.rng() < sigmoid(raw[4]),
         };
     };
 }
@@ -757,6 +796,94 @@ function collectDemonstrations(skill, act, n, levelFor, rng) {
     return { obs, acts, n };
 }
 
+// PPO training of one skill on its drill, with a level curriculum. Shared by
+// scripts/train-skill.js and the AI Lab's skill worker.
+//
+//   const t = new SkillTrainer('shoot', new PPOTrainer({...}));
+//   await t.trainGeneration();     // rollout + PPO update
+//   const c = t.checkpoint();      // evaluate, track best, maybe level up
+//
+// A level is passed once the policy succeeds in `promote` of the evaluation
+// episodes, or once it stops improving there (`patience` evaluations without
+// a new best) while at least `promoteMin` good. 70% of training episodes are
+// at the current level, the rest spread over earlier ones.
+class SkillTrainer {
+    constructor(skill, ppo, opts = {}) {
+        this.skill = skill;
+        this.ppo = ppo;
+        this.opts = Object.assign({
+            steps: 8192,
+            level: 1,
+            promote: 0.8,
+            patience: 20,
+            promoteMin: 0.4,
+            evalEpisodes: 300,
+            evalSeed: 1234,
+            gamma: 0.99,
+            lambda: 0.95,
+        }, opts);
+        this.level = this.opts.level;
+        this.generation = 0;
+        this.totalSteps = 0;
+        this.best = { level: 0, successRate: -1 };
+        this.evalsSinceBest = 0;
+        this.env = new DrillEnv(skill, { level: this.level });
+        this.levelFor = () => (this.level === 1 || Math.random() < 0.7)
+            ? this.level
+            : 1 + Math.floor(Math.random() * (this.level - 1));
+    }
+
+    async trainGeneration() {
+        const o = this.opts;
+        const batch = collectRollout(this.env, this.ppo.policy, o.steps, this.levelFor);
+        const { adv, ret } = computeEpisodicGAE(batch.rewards, batch.values, batch.dones,
+            batch.nextValue, o.gamma, o.lambda);
+        const stats = await this.ppo.update({
+            obs: batch.obs, actsPre: batch.actsPre, kicks: batch.kicks, pulls: batch.pulls,
+            logProbsOld: batch.logProbs, advs: adv, returns: ret,
+        });
+        this.generation++;
+        this.totalSteps += o.steps;
+        const atLevel = batch.episodes.filter(e => e.level === this.level);
+        const trainSuccess = atLevel.length ? atLevel.filter(e => e.success).length / atLevel.length : 0;
+        return { stats, trainSuccess, episodes: atLevel.length };
+    }
+
+    evaluate(level = this.level, episodes = this.opts.evalEpisodes) {
+        return evaluate(this.skill, policyActor(this.ppo.policy), { level, episodes, seed: this.opts.evalSeed });
+    }
+
+    // Evaluate at the current level; returns { result, level, improved, promoted, plateaued }.
+    // `level` is the level evaluated (before any promotion).
+    checkpoint() {
+        const level = this.level;
+        const result = this.evaluate(level);
+        const improved = level > this.best.level
+            || (level === this.best.level && result.successRate > this.best.successRate);
+        if (improved) {
+            this.best = { level, successRate: result.successRate };
+            this.evalsSinceBest = 0;
+        } else {
+            this.evalsSinceBest++;
+        }
+        const plateaued = this.evalsSinceBest >= this.opts.patience && result.successRate >= this.opts.promoteMin;
+        let promoted = false;
+        if (this.level < MAX_LEVEL && (result.successRate >= this.opts.promote || plateaued)) {
+            this.level++;
+            this.evalsSinceBest = 0;
+            promoted = true;
+        }
+        return { result, level, improved, promoted, plateaued: promoted && plateaued };
+    }
+
+    // Success rate at every level (for model files and the AI Lab)
+    report(episodes = this.opts.evalEpisodes) {
+        const levels = {};
+        for (let l = 1; l <= MAX_LEVEL; l++) levels[l] = this.evaluate(l, episodes).successRate;
+        return levels;
+    }
+}
+
 // GAE where dones[t] = 1 means the episode ended with step t, so neither the
 // value bootstrap nor the advantage crosses into the next episode. (Drill
 // episodes are short, so this boundary is hit constantly.)
@@ -796,6 +923,7 @@ return {
     policyActor,
     collectRollout,
     collectDemonstrations,
+    SkillTrainer,
     computeEpisodicGAE,
     seededRandom,
 };

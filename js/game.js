@@ -208,25 +208,36 @@ class Game {
     }
 
     // Build the right AI for the current difficulty.
-    // - 1v1 expert: use the 1v1 PPO agent if available
-    // - 2v2 expert: use the 2v2 PPO agent (each AI player gets its own
-    //   runtime instance backed by the SAME shared policy)
+    // - Normal: the scripted AIController
+    // - Expert: the trained AI that ships with the game (models/expert.json,
+    //   see js/ai-models.js). In team games it plays whoever is nearest the
+    //   ball and the scripted AI positions the rest.
+    // - AI Lab "Test Match" (settings.aiSource): the model trained in the lab
+    //   instead: 'lab-1v1' / 'lab-2v2' PPO agents, or 'lab-skills' (the coach
+    //   driving the player's skills)
     // Online lockstep always uses the scripted AIController: it is cheap,
-    // seeded through this.rng, and identical on every device (a locally
-    // trained RL model is not).
+    // seeded through this.rng, and identical on every device (a learned
+    // model's floating-point math is not guaranteed to be).
     _makeAI() {
         if (this.isLockstep) return new AIController('normal');
         const diff = this.settings.difficulty;
-        const ts = this.settings.teamSize;
-        if (diff === 'expert' && ts === 1
-            && typeof RLOrchestrator !== 'undefined'
-            && window.rlOrch && window.rlOrch.hasTrainedAgent()
-            && typeof RLRuntimeAgent !== 'undefined') {
-            const ag = window.rlOrch.getRuntimeAgent();
+        if (diff === 'expert') {
+            const ag = this._labAI(this.settings.aiSource)
+                || (window.AIModels && window.AIModels.expertAgent());
             if (ag) return ag;
         }
-        if (diff === 'expert' && ts === 2
-            && typeof RLOrchestrator2v2 !== 'undefined'
+        const fallbackDiff = (diff === 'expert') ? 'normal' : diff;
+        return new AIController(fallbackDiff || 'normal');
+    }
+
+    _labAI(source) {
+        const ts = this.settings.teamSize;
+        if (source === 'lab-1v1' && ts === 1
+            && window.rlOrch && window.rlOrch.hasTrainedAgent()
+            && typeof RLRuntimeAgent !== 'undefined') {
+            return window.rlOrch.getRuntimeAgent();
+        }
+        if (source === 'lab-2v2' && ts === 2
             && window.rlOrch2v2 && window.rlOrch2v2.hasTrainedAgent()
             && typeof RLRuntimeAgent2v2 !== 'undefined') {
             // Lazy-create the shared 2v2 runtime pool: each call hands out a
@@ -238,10 +249,10 @@ class Game {
             }
             const ag = this._rl2v2Pool[this._rl2v2PoolIdx % this._rl2v2Pool.length];
             this._rl2v2PoolIdx++;
-            if (ag) return ag;
+            return ag || null;
         }
-        const fallbackDiff = (diff === 'expert') ? 'normal' : diff;
-        return new AIController(fallbackDiff || 'normal');
+        if (source === 'lab-skills' && window.AIModels) return window.AIModels.skillsAgent();
+        return null;
     }
 
     _setVirtualSize(mapType) {
