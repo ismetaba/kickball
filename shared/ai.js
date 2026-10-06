@@ -17,6 +17,13 @@ class AIController {
         this.role = 'attack';
         this.aimX = 0;
         this.aimY = 0;
+        // Random source for the current update() call. Online lockstep passes
+        // the match's seeded RNG so every peer makes identical decisions.
+        this._rng = null;
+    }
+
+    _rand() {
+        return this._rng ? this._rng.next() : Math.random();
     }
 
     setDifficulty(difficulty) {
@@ -84,7 +91,8 @@ class AIController {
         return false;
     }
 
-    update(player, ball, field, teammates, opponents, dt) {
+    update(player, ball, field, teammates, opponents, dt, rng) {
+        this._rng = rng || null;
         this.decisionTimer -= dt;
 
         if (this.decisionTimer > 0) {
@@ -92,7 +100,7 @@ class AIController {
             return { kick: false, chargeRatio: 0.3 };
         }
 
-        this.decisionTimer = this.reactionTime + Math.random() * this.reactionJitter;
+        this.decisionTimer = this.reactionTime + this._rand() * this.reactionJitter;
 
         this.assignRole(player, ball, field, teammates, opponents);
 
@@ -335,7 +343,7 @@ class AIController {
             if (distToGoal < field.width * 0.2) charge = 0.75;
             if (distToGoal < field.width * 0.12) charge = 0.9;
 
-            if (Math.random() < this.accuracy) {
+            if (this._rand() < this.accuracy) {
                 return { kick: true, chargeRatio: charge };
             }
         }
@@ -344,7 +352,7 @@ class AIController {
         if (pass && this.isAimedAt(player, ball, pass.x, pass.y) && !this.wouldKickTowardOwnGoal(player, ball, field)) {
             const passDist = Physics.distance(player, pass);
             const charge = Math.min(0.15 + passDist / (field.width * 2), 0.45);
-            if (Math.random() < this.accuracy * 0.85) {
+            if (this._rand() < this.accuracy * 0.85) {
                 return { kick: true, chargeRatio: charge };
             }
         }
@@ -365,9 +373,9 @@ class AIController {
         const goalTop = field.goalY + 12;
         const goalBottom = field.goalY + field.goalHeight - 12;
 
-        const jitter = (1 - this.accuracy) * 30 * (Math.random() - 0.5);
+        const jitter = (1 - this.accuracy) * 30 * (this._rand() - 0.5);
 
-        if (Math.random() < 0.5) {
+        if (this._rand() < 0.5) {
             return Math.min(goalBottom + jitter, goalBottom);
         } else {
             return Math.max(goalTop + jitter, goalTop);

@@ -10,6 +10,9 @@ class SoundManager {
         this.volume = 0.6;
         this.musicVol = 0.35;
         this.muted = false;
+        // True while the online netcode silently re-simulates ticks after a
+        // resync — sound effects for those ticks were already heard.
+        this.suppressed = false;
         this._initialized = false;
         this._noiseBuffer = null;     // pre-built white noise
         this._pinkBuffer = null;      // pre-built pink noise (warmer)
@@ -140,7 +143,7 @@ class SoundManager {
 
     // Pitched sweep (frequency glides)
     _sweep(type, startFreq, endFreq, t, dur, peak) {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const o = this.ctx.createOscillator();
         const g = this.ctx.createGain();
         o.type = type;
@@ -156,7 +159,7 @@ class SoundManager {
 
     // Noise burst with filter
     _noiseBurst(filterType, filterFreq, filterQ, t, dur, peak, buf) {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const src = this.ctx.createBufferSource();
         src.buffer = buf || this._noiseBuffer;
         src.loop = false;
@@ -176,7 +179,7 @@ class SoundManager {
 
     // Noise burst with sweeping filter
     _noiseSwoop(filterType, startFreq, endFreq, q, t, dur, peak) {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const src = this.ctx.createBufferSource();
         src.buffer = this._noiseBuffer;
         const g = this.ctx.createGain();
@@ -200,7 +203,7 @@ class SoundManager {
        ════════════════════════════════════════════ */
 
     kick(chargeRatio) {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         if (t - this._lastKickTime < 0.04) return; // debounce
         this._lastKickTime = t;
@@ -224,7 +227,7 @@ class SoundManager {
     }
 
     ballBounce(intensity) {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         if (t - this._lastBounceTime < 0.05) return;
         this._lastBounceTime = t;
@@ -239,7 +242,7 @@ class SoundManager {
     }
 
     wallBounce(speed) {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         if (t - this._lastWallTime < 0.05) return;
         this._lastWallTime = t;
@@ -252,7 +255,7 @@ class SoundManager {
     }
 
     playerCollision(intensity) {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         const v = Math.min(intensity || 0.5, 1);
         // Soft body bump — muted thud, no harsh buzz
@@ -262,7 +265,7 @@ class SoundManager {
     }
 
     stun() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         // Dizzy descending tones
         this._sweep('sine', 900, 300, t, 0.15, 0.08);
@@ -273,7 +276,7 @@ class SoundManager {
     }
 
     goal() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
 
         // 1) Warm sub-bass boom
@@ -339,7 +342,7 @@ class SoundManager {
     }
 
     whistle(long) {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         const dur = long ? 0.7 : 0.3;
 
@@ -393,7 +396,7 @@ class SoundManager {
     }
 
     countdown() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         // Sharp electronic beep
         this._tone('sine', 880, t, 0.1, 0.12, 0.003, 0.04, 0.06);
@@ -401,7 +404,7 @@ class SoundManager {
     }
 
     countdownFinal() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         // Higher, longer, more urgent
         this._tone('sine', 1320, t, 0.2, 0.15, 0.003, 0.06, 0.08);
@@ -410,7 +413,7 @@ class SoundManager {
     }
 
     powerUpSpawn() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         // Magical shimmer — ascending arpeggiated sparkle
         const notes = [523, 659, 784, 1047, 1319];
@@ -422,7 +425,7 @@ class SoundManager {
     }
 
     powerUpCollect() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         // Satisfying ascending chime + confirmation tone
         this._tone('sine', 880, t, 0.08, 0.12, 0.002, 0.03, 0.04);
@@ -434,7 +437,7 @@ class SoundManager {
     }
 
     freeze() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         // Icy crystalline — rapid descending + shimmering high tones
         this._sweep('sine', 4000, 800, t, 0.3, 0.08);
@@ -451,7 +454,7 @@ class SoundManager {
        ════════════════════════════════════════════ */
 
     uiClick() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         // Clean digital click
         this._tone('sine', 1200, t, 0.04, 0.07, 0.001, 0.015, 0);
@@ -459,14 +462,14 @@ class SoundManager {
     }
 
     uiBack() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         this._sweep('sine', 1000, 500, t, 0.06, 0.06);
         this._tone('triangle', 400, t + 0.02, 0.04, 0.04, 0.002, 0.02, 0);
     }
 
     uiStart() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         // Energetic ascending confirmation
         this._tone('sine', 523, t, 0.08, 0.1, 0.003, 0.03, 0.04);
@@ -476,21 +479,21 @@ class SoundManager {
     }
 
     pause() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         this._sweep('sine', 800, 400, t, 0.12, 0.07);
         this._tone('triangle', 300, t + 0.04, 0.1, 0.04, 0.003, 0.04, 0);
     }
 
     resume() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         this._sweep('sine', 400, 800, t, 0.1, 0.06);
         this._tone('triangle', 600, t + 0.04, 0.08, 0.05, 0.003, 0.03, 0);
     }
 
     win() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         // Victory fanfare — triumphant ascending chord
         const melody = [
@@ -505,7 +508,7 @@ class SoundManager {
     }
 
     lose() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         // Somber descending — minor feel
         this._tone('triangle', 440, t, 0.3, 0.08, 0.01, 0.1, 0.03);
@@ -516,14 +519,14 @@ class SoundManager {
     }
 
     switchPlayer() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         this._tone('sine', 1000, t, 0.03, 0.05, 0.001, 0.015, 0);
         this._tone('sine', 1400, t + 0.025, 0.03, 0.04, 0.001, 0.015, 0);
     }
 
     comboSound(level) {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         // Ascending chime notes — more notes for higher combos
         const notes = [523, 659, 784, 1047, 1319, 1568];
@@ -551,7 +554,7 @@ class SoundManager {
     }
 
     fireGoal(level) {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         this.goal();
         const t = this._now();
         // Extra bass boom for fire goals
@@ -567,7 +570,7 @@ class SoundManager {
     }
 
     fireBallPierce() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         // Dramatic whoosh
         this._noiseSwoop('bandpass', 2000, 500, 3, t, 0.15, 0.12);
@@ -578,7 +581,7 @@ class SoundManager {
     }
 
     pullActivate() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         // Magical whoosh inward
         this._noiseSwoop('bandpass', 3000, 800, 3, t, 0.2, 0.08);
@@ -588,7 +591,7 @@ class SoundManager {
     }
 
     suddenDeathStart() {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const t = this._now();
         // Deep bass rumble
         this._sweep('sine', 60, 25, t, 1.0, 0.15);
@@ -705,7 +708,7 @@ class SoundManager {
     }
 
     _musicKick(t) {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const o = this.ctx.createOscillator();
         const g = this.ctx.createGain();
         o.type = 'sine';
@@ -720,7 +723,7 @@ class SoundManager {
     }
 
     _musicHat(t, vol, dur) {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const src = this.ctx.createBufferSource();
         src.buffer = this._noiseBuffer;
         const g = this.ctx.createGain();
@@ -737,7 +740,7 @@ class SoundManager {
     }
 
     _musicRim(t) {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         // Short sine click for rim/snap feel
         const o = this.ctx.createOscillator();
         const g = this.ctx.createGain();
@@ -767,7 +770,7 @@ class SoundManager {
     }
 
     _musicBass(t, freq, dur) {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const o = this.ctx.createOscillator();
         const g = this.ctx.createGain();
         const f = this.ctx.createBiquadFilter();
@@ -787,7 +790,7 @@ class SoundManager {
     }
 
     _musicPad(t, notes, dur) {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         notes.forEach((freq, i) => {
             // Two detuned oscillators per note for width
             const o1 = this.ctx.createOscillator();
@@ -816,7 +819,7 @@ class SoundManager {
     }
 
     _musicArp(t, freq) {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         const o = this.ctx.createOscillator();
         const g = this.ctx.createGain();
         const f = this.ctx.createBiquadFilter();
@@ -835,7 +838,7 @@ class SoundManager {
     }
 
     _musicSparkle(t) {
-        if (!this.ctx) return;
+        if (!this.ctx || this.suppressed) return;
         // Tiny high-pitched shimmer accent
         const notes = [2093, 2637, 3136];
         notes.forEach((freq, i) => {

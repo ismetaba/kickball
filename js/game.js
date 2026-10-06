@@ -17,6 +17,42 @@ class SeededRNG {
     }
 }
 
+// Fixed simulation step. Every mode (offline and online) advances the world
+// in exact 60 Hz ticks; rendering interpolates between the last two ticks.
+const TICK_MS = 1000 / 60;
+const KICK_CHARGE_MS = 1500;
+const PULL_RANGE = 150;
+
+// Largest per-tick move we still interpolate. Anything bigger is a teleport
+// (goal reset, dash, resync) and is drawn at its new position directly.
+const INTERP_MAX_PLAYER = 60;
+const INTERP_MAX_BALL = 120;
+
+// 32-bit FNV-style hash over exact float bits — used for online desync checks.
+const _hashF64 = new Float64Array(1);
+const _hashU32 = new Uint32Array(_hashF64.buffer);
+function hashValue(h, v) {
+    if (typeof v === 'number') {
+        _hashF64[0] = v;
+        h = Math.imul(h ^ _hashU32[0], 0x01000193);
+        return Math.imul(h ^ _hashU32[1], 0x01000193);
+    }
+    if (Array.isArray(v)) {
+        for (let i = 0; i < v.length; i++) h = hashValue(h, v[i]);
+        return Math.imul(h ^ v.length, 0x01000193);
+    }
+    if (typeof v === 'string') {
+        for (let i = 0; i < v.length; i++) h = Math.imul(h ^ v.charCodeAt(i), 0x01000193);
+        return Math.imul(h ^ 0x5bd1e995, 0x01000193);
+    }
+    if (typeof v === 'boolean') return Math.imul(h ^ (v ? 0x51 : 0x50), 0x01000193);
+    if (v && typeof v === 'object') {
+        for (const k in v) h = hashValue(h, v[k]);
+        return h;
+    }
+    return Math.imul(h ^ 0x9e3779b9, 0x01000193); // null / undefined
+}
+
 // Main game logic
 class Game {
     constructor() {
@@ -50,9 +86,10 @@ class Game {
         this.kickoffActive = false;  // true while kickoff restriction is active
         this.lastTime = 0;
         this.matchOver = false;
+        this.practiceMode = false;
 
-        this.input = { x: 0, y: 0, kick: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false, pull: false };
-        this.input2 = { x: 0, y: 0, kick: false, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false, pull: false };
+        // Raw controller state, written by Controls. Sampled once per tick.
+        this.input = { x: 0, y: 0, kickCharging: false, kickChargeStart: 0, kickChargeTime: 0, kickRelease: false, switchPlayer: false, pull: false };
         this.timeScale = 1.0;
         this.slowMoTimer = 0;
         this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
@@ -63,30 +100,28 @@ class Game {
         this.suddenDeathMaxTime = 60000;
         this.suddenDeathShrink = 0;
         this._originalMaxBallSpeed = Physics.MAX_BALL_SPEED;
-
-        // Local 1v1
-        this.isLocal1v1 = false;
-        this.humanPlayer2 = null;
+        this._endMatchTimer = 0;
 
         // AI vs AI spectator
         this.isSpectator = false;
-        this._aiVsAiTypes = null;
         this._baseGameSpeed = Physics.GAME_SPEED;
 
-        // Lockstep deterministic multiplayer
+        // Fixed-step clock + deterministic state shared with online lockstep
         this.rng = new SeededRNG(12345);
         this.tickCount = 0;
         this._accumulator = 0;
-        this.isLockstep = false;
-        this._lockstepInputBuffer = null;
-        this._myPlayerIdx = 0;
+        this._tickInputs = [];
 
-        // Online multiplayer state
-        this.isOnline = false;
-        this.isHost = false;
-        this.network = null;
-        this.remoteInput = { x: 0, y: 0, kickCharging: false, kickChargeTime: 0, kickRelease: false, switchPlayer: false };
-        this.remoteHumanPlayer = null;
+        // Who controls which player. Keys are "slots" (the player index a
+        // human was assigned at kickoff); the value follows SWAPs.
+        this._controlled = new Map();
+        this._mySlot = 0;
+        this._localTeam = 'red';
+
+        // Online lockstep (set up by UI via startLockstepMatch)
+        this.isLockstep = false;
+        this.netplay = null;
+        this.onMatchEnd = null;
 
         // Stats
         this.stats = {
@@ -99,8 +134,6 @@ class Game {
         // is a no-op instead of a crash.
         this._dom = {
             timer: document.getElementById('timer'),
-            redBar: document.getElementById('momentum-fill-red'),
-            blueBar: document.getElementById('momentum-fill-blue'),
             redScore: document.getElementById('red-score'),
             blueScore: document.getElementById('blue-score'),
             goalNotif: document.getElementById('goal-notification'),
@@ -114,7 +147,9 @@ class Game {
             resultScore: document.getElementById('result-score'),
             matchStats: document.getElementById('match-stats'),
             pullBtn: document.getElementById('btn-pull'),
+            kickBtn: document.getElementById('btn-kick'),
         };
+        this._hud = { timer: null, red: null, blue: null, pull: null, charge: -1 };
 
         // Cached team arrays (rebuilt when players change, not every frame)
         this._redTeam = [];
@@ -143,6 +178,10 @@ class Game {
         });
     }
 
+    get isNetworked() {
+        return this.isLockstep;
+    }
+
     // Tracked setTimeout: auto-cancelled by quit()
     _setTimeout(fn, ms) {
         const id = setTimeout(() => {
@@ -169,7 +208,11 @@ class Game {
     // - 1v1 expert: use the 1v1 PPO agent if available
     // - 2v2 expert: use the 2v2 PPO agent (each AI player gets its own
     //   runtime instance backed by the SAME shared policy)
+    // Online lockstep always uses the scripted AIController: it is cheap,
+    // seeded through this.rng, and identical on every device (a locally
+    // trained RL model is not).
     _makeAI() {
+        if (this.isLockstep) return new AIController('normal');
         const diff = this.settings.difficulty;
         const ts = this.settings.teamSize;
         if (diff === 'expert' && ts === 1
@@ -231,30 +274,6 @@ class Game {
         this._updateFieldViewScale();
     }
 
-    repositionEntities() {
-        // Recalculate spawn positions after resize
-        const positions = this.getSpawnPositions();
-        this.ball.spawnX = this.field.centerX;
-        this.ball.spawnY = this.field.centerY;
-
-        let redIdx = 0, blueIdx = 0;
-        for (const p of this.players) {
-            if (p.team === 'red') {
-                if (redIdx < positions.red.length) {
-                    p.spawnX = positions.red[redIdx].x;
-                    p.spawnY = positions.red[redIdx].y;
-                }
-                redIdx++;
-            } else {
-                if (blueIdx < positions.blue.length) {
-                    p.spawnX = positions.blue[blueIdx].x;
-                    p.spawnY = positions.blue[blueIdx].y;
-                }
-                blueIdx++;
-            }
-        }
-    }
-
     getSpawnPositions() {
         const f = this.field;
         const positions = { red: [], blue: [] };
@@ -309,6 +328,8 @@ class Game {
             Physics.MAX_BALL_SPEED = this._basePhysics.MAX_BALL_SPEED;
             Physics.MAX_PLAYER_SPEED = this._basePhysics.MAX_PLAYER_SPEED;
         }
+        // Sudden death ramps the ball speed up from this map-adjusted cap
+        this._originalMaxBallSpeed = Physics.MAX_BALL_SPEED;
     }
 
     resetMapPhysics() {
@@ -320,46 +341,41 @@ class Game {
             Physics.POWER_KICK_FORCE = this._basePhysics.POWER_KICK_FORCE;
             Physics.MAX_BALL_SPEED = this._basePhysics.MAX_BALL_SPEED;
             Physics.MAX_PLAYER_SPEED = this._basePhysics.MAX_PLAYER_SPEED;
+            this._originalMaxBallSpeed = Physics.MAX_BALL_SPEED;
         }
     }
 
-    startMatch() {
+    // --- Match setup -------------------------------------------------------
+
+    _prepareField() {
         this.renderer.resize();
         this._setVirtualSize(this.settings.map);
         this._updateFieldViewScale();
         this.field = new Field(this.VIRTUAL_W, this.VIRTUAL_H, this.settings.map);
         this.ball = new Ball(this.field.centerX, this.field.centerY);
+    }
 
+    // Create both teams in a fixed order (red 0..n-1, blue n..2n-1). Players
+    // whose index is in `humanIdx` are human-controlled; everyone else gets
+    // an AI controller, also in index order so lockstep peers match.
+    _buildPlayers(humanIdx) {
         this.players = [];
         this.aiControllers = [];
-
         const positions = this.getSpawnPositions();
-
-        // Create red team (player is on red)
-        for (let i = 0; i < this.settings.teamSize; i++) {
-            const isHuman = i === 0;
-            const p = new Player(positions.red[i].x, positions.red[i].y, 'red', isHuman);
+        const n = this.settings.teamSize;
+        for (let i = 0; i < n * 2; i++) {
+            const team = i < n ? 'red' : 'blue';
+            const pos = positions[team][i % n];
+            const p = new Player(pos.x, pos.y, team, humanIdx.has(i));
             this.players.push(p);
-            if (isHuman) {
-                this.humanPlayer = p;
-            } else {
-                const redAi = this._makeAI();
-                this.aiControllers.push({ player: p, ai: redAi });
-            }
         }
-
-        // Create blue team (all AI)
-        for (let i = 0; i < this.settings.teamSize; i++) {
-            const p = new Player(positions.blue[i].x, positions.blue[i].y, 'blue', false);
-            this.players.push(p);
-            const ai = this._makeAI();
-            this.aiControllers.push({ player: p, ai });
+        for (const p of this.players) {
+            if (!p.isHuman) this.aiControllers.push({ player: p, ai: this._makeAI() });
         }
-
         this.rebuildTeamCache();
-        this.powerUpManager = new PowerUpManager(this.field);
-        this.powerUpManager.enabled = this.settings.powerups;
+    }
 
+    _resetMatchState() {
         this.redScore = 0;
         this.blueScore = 0;
         this.timeRemaining = this.settings.duration * 1000;
@@ -373,22 +389,32 @@ class Game {
         this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
         this.momentum = { red: 0, blue: 0, max: 5, decayRate: 0.0001 };
         this.timeScale = 1.0;
+        this.slowMoTimer = 0;
         this.combo = { team: null, count: 0 };
         this.suddenDeath = false;
         this.suddenDeathTimer = 0;
         this.suddenDeathShrink = 0;
-        Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
-
+        this._endMatchTimer = 0;
+        this._lastCountdownSec = -1;
         this.tickCount = 0;
         this._accumulator = 0;
-        this._endMatchScheduled = false;
-        this._goalNotifTimer = null;
         this._powerUpNotifTimer = null;
 
+        this._hud = { timer: null, red: null, blue: null, pull: null, charge: -1 };
+        if (this._dom.timer) this._dom.timer.style.color = '';
+        if (this._dom.goalNotif) this._dom.goalNotif.classList.add('hidden');
+        this._updateScoreHud();
+        this._updateTimerHud();
+    }
+
+    _beginLoop() {
         this.applyMapPhysics();
+        Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
+        this._snapPrev();
         this.lastTime = performance.now();
         Sound.whistle(false);
         Sound.startMusic();
+        this._pauseBackgroundWork();
         if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = null; }
         this.loop();
 
@@ -398,115 +424,95 @@ class Game {
         this._setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 300);
     }
 
-    startPractice() {
-        this.renderer.resize();
-        this._setVirtualSize(this.settings.map);
-        this._updateFieldViewScale();
-        this.field = new Field(this.VIRTUAL_W, this.VIRTUAL_H, this.settings.map);
-        this.ball = new Ball(this.field.centerX, this.field.centerY);
+    startMatch() {
+        this.isLockstep = false;
+        this.netplay = null;
+        Physics.GAME_SPEED = this._baseGameSpeed;
+        this._prepareField();
+        this._buildPlayers(new Set([0]));
+        this.humanPlayer = this.players[0];
+        this._mySlot = 0;
+        this._controlled = new Map([[0, this.humanPlayer]]);
+        this._localTeam = 'red';
 
-        this.players = [];
+        this.powerUpManager = new PowerUpManager(this.field);
+        this.powerUpManager.enabled = this.settings.powerups;
+
+        this._resetMatchState();
+        this._beginLoop();
+    }
+
+    startPractice() {
+        this.isLockstep = false;
+        this.netplay = null;
+        Physics.GAME_SPEED = this._baseGameSpeed;
+        this._prepareField();
         this.aiControllers = [];
 
         // Just the human player, no AI
         const p = new Player(this.field.centerX - 60, this.field.centerY, 'red', true);
-        this.players.push(p);
+        this.players = [p];
         this.humanPlayer = p;
-
+        this._mySlot = 0;
+        this._controlled = new Map([[0, p]]);
+        this._localTeam = 'red';
         this.rebuildTeamCache();
+
         this.powerUpManager = new PowerUpManager(this.field);
         this.powerUpManager.enabled = false;
 
-        this.redScore = 0;
-        this.blueScore = 0;
-        this.timeRemaining = this.settings.duration * 1000;
-        this.isRunning = true;
-        this.isPaused = false;
-        this.matchOver = false;
-        this.isGoalScored = false;
-        this.goalTimer = 0;
-        this.kickoffTeam = null;
-        this.kickoffActive = false;
         this.practiceMode = true;
-        this.stats = { possession: { red: 0, blue: 0 }, shots: { red: 0, blue: 0 } };
-        this.combo = { team: null, count: 0 };
-        this.suddenDeath = false;
-        this.suddenDeathTimer = 0;
-        this.suddenDeathShrink = 0;
-        this._endMatchScheduled = false;
-        this._goalNotifTimer = null;
-        this._powerUpNotifTimer = null;
-        Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
-
-        this.applyMapPhysics();
-        this.lastTime = performance.now();
-        Sound.whistle(false);
-        Sound.startMusic();
-        if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = null; }
-        this.loop();
-
-        // iOS WKWebView fix: dimensions may not be available at startup.
-        this._setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 100);
-        this._setTimeout(() => { this.renderer.resize(); this._updateFieldViewScale(); }, 300);
+        this._resetMatchState();
+        this._beginLoop();
     }
 
-    loop() {
+    // Online lockstep: every peer calls this with the exact same config
+    // (from the host's start message), so the worlds start bit-identical.
+    //   cfg.settings   — host's match settings
+    //   cfg.seed       — shared RNG seed
+    //   cfg.humanSlots — player indices driven by remote/local humans
+    //   cfg.mySlot     — the player index this device controls
+    startLockstepMatch(cfg) {
+        this.settings = { ...this.settings, ...cfg.settings };
+        this.practiceMode = false;
+        this.isLockstep = true;
+        this.isSpectator = false;
+        Physics.GAME_SPEED = this._baseGameSpeed;
+        this.rng.seed(cfg.seed);
+
+        this._prepareField();
+        this._buildPlayers(new Set(cfg.humanSlots));
+        this._controlled = new Map();
+        for (const slot of cfg.humanSlots) this._controlled.set(slot, this.players[slot]);
+        this._mySlot = cfg.mySlot;
+        this.humanPlayer = this.players[cfg.mySlot] || null;
+        this._localTeam = this.humanPlayer ? this.humanPlayer.team : 'red';
+
+        this.powerUpManager = new PowerUpManager(this.field);
+        this.powerUpManager.enabled = this.settings.powerups !== false;
+
+        this._resetMatchState();
+        this._beginLoop();
+    }
+
+    // --- Main loop ---------------------------------------------------------
+
+    // `frameTime` is the requestAnimationFrame timestamp (vsync-aligned, so
+    // much steadier than reading the clock inside the callback).
+    loop(frameTime) {
         if (!this.isRunning) { this._rafId = null; return; }
 
         try {
-            const now = performance.now();
-            const elapsed = Math.min(now - this.lastTime, 100);
-            this.lastTime = now;
+            const now = frameTime !== undefined ? frameTime : performance.now();
+            const elapsed = Math.max(0, Math.min(now - this.lastTime, 250));
+            this.lastTime = Math.max(this.lastTime, now);
 
+            let alpha = 1;
             if (!this.isPaused) {
-                if (this.isLockstep) {
-                    // Lockstep P2P: schedule 1 input, consume 1 tick per frame.
-                    // _applyPeerInputs schedules input for (tickCount + INPUT_DELAY).
-                    // We must consume exactly 1 tick so tickCount advances by 1,
-                    // keeping the pipeline aligned: each frame fills the next gap.
-                    // At 60fps this gives 60Hz physics (matching TICK_MS = 16.67).
-                    if (this._applyPeerInputs) this._applyPeerInputs();
-                    if (this._lockstepCanAdvance()) {
-                        this._lockstepTick();
-                    }
-                } else if (this.isOnline) {
-                    this._onlineUpdate(elapsed);
-                } else {
-                    // Fixed timestep accumulator for offline play
-                    this._accumulator = (this._accumulator || 0) + elapsed;
-                    const TICK_MS = 16.67;
-                    while (this._accumulator >= TICK_MS) {
-                        this._accumulator -= TICK_MS;
-                        Physics.dtRatio = Physics.GAME_SPEED;
-                        this.update(TICK_MS);
-                        this.tickCount++;
-                    }
-                }
+                alpha = this.netplay ? this.netplay.advance(elapsed) : this._advanceOffline(elapsed);
             }
 
-            // Goal timer (uses real time for display purposes)
-            if (!this.isOnline && this.isGoalScored) {
-                this.goalTimer -= elapsed;
-                if (this.goalTimer <= 0) {
-                    this.isGoalScored = false;
-                    if (this._dom.goalNotif) this._dom.goalNotif.classList.add('hidden');
-                    this.resetAfterGoal();
-                }
-            }
-
-            this.renderer.updateConfetti(elapsed);
-            this.renderer.updateNetRipple(elapsed);
-            this.renderer.updateHitFlashes();
-
-            if (this.isOnline && this.ball) {
-                const speed = Math.sqrt(this.ball.vx * this.ball.vx + this.ball.vy * this.ball.vy);
-                const maxPairs = this.ball.superKick > 0 ? 20 : 10;
-                if (speed > 3) {
-                    this.ball._addTrailPoint(this.ball.x, this.ball.y, maxPairs);
-                } else if (this.ball.trailCount > 0) {
-                    this.ball.trailCount--;
-                }
-            }
+            this.renderer.updateEffects(elapsed);
 
             // Self-healing: if canvas has bad dimensions, re-resize
             // (iOS WKWebView can report 0 dimensions during transitions)
@@ -515,344 +521,99 @@ class Game {
                 this._updateFieldViewScale();
             }
 
-            this.render();
+            this.render(alpha, elapsed);
         } catch (err) {
             console.error('Game loop error:', err);
         }
 
-        this._rafId = requestAnimationFrame(() => this.loop());
+        this._rafId = requestAnimationFrame((t) => this.loop(t));
     }
 
-    _lockstepCanAdvance() {
-        if (!this._lockstepInputBuffer) return false;
-        if (this._lockstepInputBuffer.has(this.tickCount)) return true;
-
-        // Input timeout: if we've been waiting >100ms for inputs, use last known input
-        // This prevents the game from stalling on brief packet loss
-        if (!this._lockstepWaitStart) {
-            this._lockstepWaitStart = performance.now();
-            return false;
+    // Offline: classic fixed-timestep accumulator. Returns the interpolation
+    // factor between the previous and current tick for rendering.
+    _advanceOffline(elapsed) {
+        this._accumulator += elapsed;
+        if (this._accumulator > TICK_MS * 6) this._accumulator = TICK_MS * 6;
+        const inputs = this._tickInputs;
+        while (this._accumulator >= TICK_MS && this.isRunning) {
+            this._accumulator -= TICK_MS;
+            inputs.length = 0;
+            if (this.humanPlayer) inputs.push(this._mySlot, this.sampleLocalInput());
+            this.simTick(inputs);
         }
-        const waited = performance.now() - this._lockstepWaitStart;
-        if (waited > 100) {
-            // Timeout: fill missing tick with last known inputs
-            const lastTick = this.tickCount - 1;
-            const lastInputs = this._lockstepLastInputs || new Map();
-            const fallbackMap = new Map();
-            const emptyInput = { x: 0, y: 0, kick: false, chargeRatio: 0, pull: false, switchPlayer: false };
-            for (let i = 0; i < this.players.length; i++) {
-                const last = lastInputs.get(i);
-                // Copy last directional input but clear one-shot actions
-                fallbackMap.set(i, last
-                    ? { x: last.x, y: last.y, kick: false, chargeRatio: 0, pull: last.pull, switchPlayer: false }
-                    : { ...emptyInput });
-            }
-            this._lockstepInputBuffer.set(this.tickCount, fallbackMap);
-            this._lockstepWaitStart = null;
-            console.warn(`Lockstep timeout at tick ${this.tickCount}, using last known input`);
-            return true;
-        }
-        return false;
+        return this._accumulator / TICK_MS;
     }
 
-    _lockstepTick() {
-        const inputs = this._lockstepInputBuffer.get(this.tickCount);
-        this._lockstepInputBuffer.delete(this.tickCount);
-
-        // Reset wait timer and save inputs for timeout fallback
-        this._lockstepWaitStart = null;
-        if (inputs) this._lockstepLastInputs = inputs;
-
-        Physics.dtRatio = Physics.GAME_SPEED;
-        const TICK_MS = 16.67;
-
-        // Apply all player inputs for this tick.
-        // The "current controlled player" for a slot can change over time via SWAP,
-        // so we route inputs through _slotControlled instead of always using players[playerIdx].
-        if (inputs) {
-            for (const [playerIdx, inp] of inputs) {
-                const player = this._slotControlled?.get(playerIdx) || this.players[playerIdx];
-                if (!player) continue;
-
-                if (player.powerUp !== 'frozen' && player.stunTimer <= 0) {
-                    player.applyInput(inp.x, inp.y);
-                }
-
-                if (inp.kick && inp.chargeRatio > 0) {
-                    this.hitNearbyPlayers(player, inp.chargeRatio);
-                    if (player.kick(this.ball, inp.chargeRatio)) {
-                        this.stats.shots[player.team]++;
-                        const shakeIntensity = 0.15 + inp.chargeRatio * 0.85;
-                        this.renderer.triggerShake(shakeIntensity);
-                        this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.3 + inp.chargeRatio * 0.7);
-                        Sound.kick(inp.chargeRatio);
-                        const towardGoal = (player.team === 'red' && this.ball.vx > 0) || (player.team === 'blue' && this.ball.vx < 0);
-                        if (towardGoal) this.addMomentum(player.team);
-                    }
-                }
-                if (inp.pull) {
-                    if (!player.pullActive && player.pullCooldown <= 0 && Physics.distance(player, this.ball) < 150) {
-                        player.activatePull();
-                        if (playerIdx === this._myPlayerIdx) Sound.pullActivate();
-                    }
-                } else if (player.pullActive) {
-                    player.pullActive = false;
-                    player.pullDuration = 0;
-                    player.pullCooldown = player.pullCooldownTime;
-                }
-                // Player swap must run on EVERY peer for every slot's swap input,
-                // not just the peer that pressed it — otherwise the simulations diverge.
-                if (inp.switchPlayer && this._slotControlled) {
-                    const newHuman = this._swapToNearestTeammate(player);
-                    this._slotControlled.set(playerIdx, newHuman);
-                    if (playerIdx === this._myPlayerIdx) {
-                        this.humanPlayer = newHuman;
-                        Sound.switchPlayer();
-                    }
-                }
-            }
-        }
-
-        // Run physics update with lockstep flag active
-        this.update(TICK_MS);
-        this.tickCount++;
-
-        // Checksum every 60 ticks with full state for auto-resync
-        if (this.tickCount % 60 === 0 && this.p2p) {
-            const hash = this._computeChecksum();
-            if (this.isP2PHost) {
-                // Include full state so guests can auto-resync on mismatch
-                const fullState = this._serializeFullState();
-                this.p2p.broadcastChecksum(this.tickCount, hash, fullState);
-            }
-        }
-    }
-
-    _computeChecksum() {
-        // Covers everything that can desync — position, velocity, timers,
-        // and whether a player is currently "human" for rendering purposes.
-        let h = 0;
-        for (const p of this.players) {
-            h = (h * 31 + ((p.x * 10) | 0)) | 0;
-            h = (h * 31 + ((p.y * 10) | 0)) | 0;
-            h = (h * 31 + ((p.vx * 100) | 0)) | 0;
-            h = (h * 31 + ((p.vy * 100) | 0)) | 0;
-            h = (h * 31 + ((p.stunTimer | 0))) | 0;
-            h = (h * 31 + ((p.pullCooldown | 0))) | 0;
-            h = (h * 31 + (p.isHuman ? 1 : 0)) | 0;
-        }
-        h = (h * 31 + ((this.ball.x * 10) | 0)) | 0;
-        h = (h * 31 + ((this.ball.y * 10) | 0)) | 0;
-        h = (h * 31 + ((this.ball.vx * 100) | 0)) | 0;
-        h = (h * 31 + ((this.ball.vy * 100) | 0)) | 0;
-        h = (h * 31 + this.redScore) | 0;
-        h = (h * 31 + this.blueScore) | 0;
-        return h;
-    }
-
-    // Serialize full game state for desync recovery
-    _serializeFullState() {
-        // Include which player each slot currently controls so swap state
-        // is also restored on a resync. Slots that don't exist in the map
-        // use their default index.
-        const slotCtrl = [];
-        if (this._slotControlled) {
-            for (const [slotIdx, player] of this._slotControlled) {
-                slotCtrl.push([slotIdx, this.players.indexOf(player)]);
-            }
-        }
-        const players = this.players.map(p => ({
-            x: Math.round(p.x * 100) / 100,
-            y: Math.round(p.y * 100) / 100,
-            vx: Math.round(p.vx * 100) / 100,
-            vy: Math.round(p.vy * 100) / 100,
-            st: p.stunTimer || 0,
-            pc: p.pullCooldown || 0,
-            ih: p.isHuman ? 1 : 0,
-        }));
-        return {
-            p: players,
-            bx: Math.round(this.ball.x * 100) / 100,
-            by: Math.round(this.ball.y * 100) / 100,
-            bvx: Math.round(this.ball.vx * 100) / 100,
-            bvy: Math.round(this.ball.vy * 100) / 100,
-            rs: this.redScore,
-            bs: this.blueScore,
-            tr: this.timeRemaining,
-            sc: slotCtrl,
+    // Convert raw controller state into one tick's input and consume the
+    // one-shot events (kick release, swap) so each is delivered exactly once.
+    sampleLocalInput() {
+        const src = this.input;
+        const inp = {
+            x: src.x,
+            y: src.y,
+            held: !!src.kickCharging,
+            release: !!src.kickRelease,
+            cr: src.kickRelease ? Math.min((src.kickChargeTime || 0) / KICK_CHARGE_MS, 1) : 0,
+            pull: !!src.pull,
+            sw: !!src.switchPlayer,
         };
+        src.kickRelease = false;
+        src.kickChargeTime = 0;
+        src.switchPlayer = false;
+        return inp;
     }
 
-    // Apply full state from host to fix desync
-    _applyFullState(state) {
-        if (!state || !state.p) return;
-        for (let i = 0; i < this.players.length && i < state.p.length; i++) {
-            const p = this.players[i];
-            const sp = state.p[i];
-            p.x = sp.x;
-            p.y = sp.y;
-            p.vx = sp.vx;
-            p.vy = sp.vy;
-            if (sp.st !== undefined) p.stunTimer = sp.st;
-            if (sp.pc !== undefined) p.pullCooldown = sp.pc;
-            if (sp.ih !== undefined) p.isHuman = sp.ih === 1;
-        }
-        this.ball.x = state.bx;
-        this.ball.y = state.by;
-        this.ball.vx = state.bvx;
-        this.ball.vy = state.bvy;
-        this.redScore = state.rs;
-        this.blueScore = state.bs;
-        if (state.tr !== undefined) this.timeRemaining = state.tr;
+    // One deterministic 60 Hz step. `inputs` is a flat [slot, input, ...]
+    // list for the human-controlled slots this tick.
+    simTick(inputs) {
+        this._snapPrev();
+        this.update(TICK_MS, inputs);
+        this.tickCount++;
+    }
 
-        // Restore the slot→controlled-player map
-        if (state.sc && this._slotControlled) {
-            this._slotControlled.clear();
-            for (const [slotIdx, playerIdx] of state.sc) {
-                if (playerIdx >= 0 && playerIdx < this.players.length) {
-                    this._slotControlled.set(slotIdx, this.players[playerIdx]);
-                }
-            }
-            // Rebuild aiControllers so AI runs only on non-human players
-            const controlledSet = new Set(this._slotControlled.values());
-            this.aiControllers = this.aiControllers.filter(ac => ac && !controlledSet.has(ac.player));
-            for (const p of this.players) {
-                if (!p.isHuman && !this.aiControllers.some(ac => ac.player === p)) {
-                    this.aiControllers.push({ player: p, ai: new AIController(this.settings.difficulty || 'normal') });
-                }
-            }
-            // Update local humanPlayer pointer
-            if (this._myPlayerIdx !== undefined) {
-                const mine = this._slotControlled.get(this._myPlayerIdx);
-                if (mine) this.humanPlayer = mine;
-            }
+    _snapPrev() {
+        for (const p of this.players) { p._px = p.x; p._py = p.y; }
+        if (this.ball) { this.ball._px = this.ball.x; this.ball._py = this.ball.y; }
+    }
+
+    // Online: a disconnected human's slot is handed to the AI. Called by the
+    // netcode at the same tick on every peer.
+    dropSlot(slot) {
+        const p = this._controlled.get(slot);
+        if (!p) return;
+        this._controlled.delete(slot);
+        p.isHuman = false;
+        p.chargeTicks = 0;
+        p.chargeLock = false;
+        p.kickChargeRatio = 0;
+        if (!this.aiControllers.some(c => c.player === p)) {
+            this.aiControllers.push({ player: p, ai: new AIController('normal') });
         }
     }
 
-    _onlineUpdate(dt) {
-        if (!this.network) return;
+    // --- Simulation --------------------------------------------------------
 
-        // 1. Send input to server
-        const sent = this.network.sendInput(this.input);
-        if (sent) {
-            this.input.kickRelease = false;
-            this.input.switchPlayer = false;
-        }
+    update(dt, inputs) {
+        const rawDt = dt;
 
-        // 2. Interpolate all remote entities from server state buffer
-        //    This sets positions for remote players and ball via smooth interpolation.
-        //    For the local player, it stores the server target in network.serverPlayerPos.
-        this.network.interpolate(this);
-
-        // 3. Client-side prediction for local player
-        //    Apply input immediately so movement feels instant.
-        //    Then gently correct toward server position.
-        Physics.dtRatio = (dt / 16.67) * Physics.GAME_SPEED;
-        const hp = this.humanPlayer;
-        if (hp && hp.stunTimer <= 0 && hp.powerUp !== 'frozen') {
-            // Apply joystick input
-            hp.applyInput(this.input.x, this.input.y);
-
-            // Kick charge visual — use kickChargeStart (set on touchstart),
-            // not kickChargeTime (only set on release)
-            if (this.input.kickCharging) {
-                hp.kickChargeRatio = Math.min((performance.now() - this.input.kickChargeStart) / 1500, 1);
-                // Slow down while charging
-                const slowFactor = 1 - hp.kickChargeRatio * 0.015;
-                hp.vx *= Math.pow(slowFactor, Physics.dtRatio);
-                hp.vy *= Math.pow(slowFactor, Physics.dtRatio);
-            } else {
-                hp.kickChargeRatio = 0;
-            }
-
-            // Physics step
-            const s = Physics.dtRatio;
-            hp.vx *= Math.pow(Physics.FRICTION, s);
-            hp.vy *= Math.pow(Physics.FRICTION, s);
-            Physics.clampSpeed(hp, hp.getMaxSpeed());
-            hp.x += hp.vx * s;
-            hp.y += hp.vy * s;
-
-            // Constrain to field
-            if (this.field) {
-                Physics.constrainToField(hp, this.field, true);
-            }
-
-            // Server reconciliation: smoothly correct toward server position
-            // Skip reconciliation for the first second so the server catches up with our input
-            if (!this._onlineStartTime) this._onlineStartTime = performance.now();
-            const timeSinceStart = performance.now() - this._onlineStartTime;
-
-            const srv = this.network.serverPlayerPos;
-            if (srv && timeSinceStart > 1000) {
-                const errX = srv.x - hp.x;
-                const errY = srv.y - hp.y;
-                const errDist = Math.sqrt(errX * errX + errY * errY);
-
-                if (errDist > 60) {
-                    hp.x = srv.x;
-                    hp.y = srv.y;
-                    hp.vx = srv.vx;
-                    hp.vy = srv.vy;
-                } else if (errDist > 1) {
-                    // Only correct position, NOT velocity — velocity correction
-                    // fights the prediction and makes movement feel sluggish
-                    hp.x += errX * 0.1;
-                    hp.y += errY * 0.1;
-                }
+        // Goal celebration → kickoff reset. Tick-based so every online peer
+        // resets on exactly the same tick.
+        if (this.isGoalScored) {
+            this.goalTimer -= rawDt;
+            if (this.goalTimer <= 0) {
+                this.isGoalScored = false;
+                if (this._dom.goalNotif) this._dom.goalNotif.classList.add('hidden');
+                this.resetAfterGoal();
             }
         }
-
-        // 4. Local collision resolution — prevent visual overlap
-        if (hp) {
-            // Player vs other players
-            for (const p of this.players) {
-                if (p === hp) continue;
-                const dx = p.x - hp.x;
-                const dy = p.y - hp.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                const minDist = hp.radius + p.radius;
-                if (dist > 0 && dist < minDist) {
-                    const nx = dx / dist;
-                    const ny = dy / dist;
-                    const overlap = minDist - dist;
-                    // Push local player out (don't move remote — server owns them)
-                    hp.x -= nx * overlap;
-                    hp.y -= ny * overlap;
-                }
-            }
-            // Player vs ball
-            if (this.ball) {
-                const dx = this.ball.x - hp.x;
-                const dy = this.ball.y - hp.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                const minDist = hp.radius + this.ball.radius;
-                if (dist > 0 && dist < minDist) {
-                    const nx = dx / dist;
-                    const ny = dy / dist;
-                    const overlap = minDist - dist;
-                    hp.x -= nx * overlap * 0.5;
-                    hp.y -= ny * overlap * 0.5;
-                }
+        if (this._endMatchTimer > 0) {
+            this._endMatchTimer -= rawDt;
+            if (this._endMatchTimer <= 0) {
+                this._endMatchTimer = 0;
+                this.endMatch();
+                return;
             }
         }
-
-        // 5. Animate power-ups locally (visual only)
-        if (this.powerUpManager) {
-            const pups = this.powerUpManager.powerUps;
-            for (let i = 0; i < pups.length; i++) {
-                const pu = pups[i];
-                pu.bobTimer = (pu.bobTimer || 0) + dt * 0.003;
-                pu.scale = 1 + Math.sin(pu.bobTimer) * 0.15;
-                pu.rotateTimer = (pu.rotateTimer || 0) + dt * 0.002;
-                pu.pulseTimer = (pu.pulseTimer || 0) + dt * 0.004;
-            }
-        }
-    }
-
-    update(dt) {
-        // Online mode is handled by _onlineUpdate() called from loop().
-        // This update() is called for offline/local/lockstep (inside _lockstepTick) matches.
 
         // Recover from slow-motion
         if (this.slowMoTimer > 0) {
@@ -864,29 +625,18 @@ class Game {
         }
 
         // Apply time scale for slow-motion effects
-        const rawDt = dt;
         dt *= this.timeScale;
-        // In lockstep/fixed timestep mode, dtRatio is already set by the caller
-        if (!this.isLockstep) {
-            Physics.dtRatio = (dt / 16.67) * Physics.GAME_SPEED;
-        }
+        Physics.dtRatio = this.timeScale * Physics.GAME_SPEED;
 
         // Timer (skip in practice mode) - use raw dt so timer isn't affected by slow-mo
         if (!this.practiceMode) {
             if (this.suddenDeath) {
-                // Sudden death timer
                 this.suddenDeathTimer += rawDt;
                 this.suddenDeathShrink = Math.min(this.suddenDeathTimer / this.suddenDeathMaxTime, 1);
 
                 // Gradually increase ball speed
                 Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed + this.suddenDeathShrink * 10;
-
-                // Update timer display
-                const secs = Math.ceil(this.suddenDeathTimer / 1000);
-                const m = Math.floor(secs / 60);
-                const s = secs % 60;
-                this._dom.timer.textContent = `${m}:${s.toString().padStart(2, '0')}`;
-                this._dom.timer.style.color = '#ff4444';
+                this._updateTimerHud();
 
                 // Force end after max time
                 if (this.suddenDeathTimer >= this.suddenDeathMaxTime) {
@@ -898,7 +648,7 @@ class Game {
                 if (this.timeRemaining <= 0) {
                     this.timeRemaining = 0;
                     // Sudden death if tied
-                    if (this.redScore === this.blueScore && !this.practiceMode) {
+                    if (this.redScore === this.blueScore) {
                         this.suddenDeath = true;
                         this.suddenDeathTimer = 0;
                         this.suddenDeathShrink = 0;
@@ -915,11 +665,8 @@ class Game {
                 }
 
                 if (!this.suddenDeath) {
+                    this._updateTimerHud();
                     const secs = Math.ceil(this.timeRemaining / 1000);
-                    const m = Math.floor(secs / 60);
-                    const s = secs % 60;
-                    this._dom.timer.textContent = `${m}:${s.toString().padStart(2, '0')}`;
-
                     // Countdown beeps in final seconds
                     if (secs <= 5 && secs !== this._lastCountdownSec) {
                         this._lastCountdownSec = secs;
@@ -939,113 +686,17 @@ class Game {
             p.momentumBonus = this.momentum[p.team] / this.momentum.max;
         }
 
-        // Momentum HUD hidden (mechanic still active under the hood)
-
-        // Human input (skipped in lockstep — inputs applied by _lockstepTick)
-        if (!this.isLockstep && this.humanPlayer && this.humanPlayer.powerUp !== 'frozen' && this.humanPlayer.stunTimer <= 0) {
-            this.humanPlayer.applyInput(this.input.x, this.input.y);
-
-            // Track charge time for visual feedback + slow player while charging
-            if (this.input.kickCharging) {
-                this.humanPlayer.kickChargeRatio = Math.min((performance.now() - this.input.kickChargeStart) / 1500, 1);
-                // Slow player down while holding kick (more charge = slower)
-                const slowFactor = 1 - this.humanPlayer.kickChargeRatio * 0.015;
-                this.humanPlayer.vx *= Math.pow(slowFactor, Physics.dtRatio);
-                this.humanPlayer.vy *= Math.pow(slowFactor, Physics.dtRatio);
-            } else {
-                this.humanPlayer.kickChargeRatio = 0;
-            }
-
-            // Charged kick: released after charging
-            if (this.input.kickRelease) {
-                const chargeRatio = Math.min(this.input.kickChargeTime / 1500, 1);
-                this.hitNearbyPlayers(this.humanPlayer, chargeRatio);
-                if (this.humanPlayer.kick(this.ball, chargeRatio)) {
-                    this.stats.shots.red++;
-                    const shakeIntensity = 0.15 + chargeRatio * 0.85;
-                    this.renderer.triggerShake(shakeIntensity);
-                    this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.3 + chargeRatio * 0.7);
-                    Sound.kick(chargeRatio);
-                    if (this.ball.vx > 0) this.addMomentum('red');
+        // Human input (offline local player, or every slot in lockstep)
+        if (inputs) {
+            for (let i = 0; i < inputs.length; i += 2) {
+                const slot = inputs[i];
+                const player = this._controlled.get(slot);
+                if (!player) continue;
+                const next = this._applyHumanInput(player, inputs[i + 1], slot);
+                if (next !== player) {
+                    this._controlled.set(slot, next);
+                    if (slot === this._mySlot) this.humanPlayer = next;
                 }
-                this.input.kickRelease = false;
-                this.input.kickChargeTime = 0;
-            }
-
-            if (this.input.switchPlayer) {
-                this.switchToNearestTeammate();
-                Sound.switchPlayer();
-                this.input.switchPlayer = false;
-            }
-        }
-
-        // Remote player input (online: host applies guest's input to blue human)
-        if (this.isOnline && this.isHost && this.remoteHumanPlayer &&
-            this.remoteHumanPlayer.powerUp !== 'frozen' && this.remoteHumanPlayer.stunTimer <= 0) {
-
-            this.remoteHumanPlayer.applyInput(this.remoteInput.x, this.remoteInput.y);
-
-            if (this.remoteInput.kickCharging) {
-                this.remoteHumanPlayer.kickChargeRatio = Math.min(this.remoteInput.kickChargeTime / 1500, 1);
-                const slowFactor = 1 - this.remoteHumanPlayer.kickChargeRatio * 0.015;
-                this.remoteHumanPlayer.vx *= Math.pow(slowFactor, Physics.dtRatio);
-                this.remoteHumanPlayer.vy *= Math.pow(slowFactor, Physics.dtRatio);
-            } else {
-                this.remoteHumanPlayer.kickChargeRatio = 0;
-            }
-
-            if (this.remoteInput.kickRelease) {
-                const chargeRatio = Math.min(this.remoteInput.kickChargeTime / 1500, 1);
-                this.hitNearbyPlayers(this.remoteHumanPlayer, chargeRatio);
-                if (this.remoteHumanPlayer.kick(this.ball, chargeRatio)) {
-                    this.stats.shots.blue++;
-                    this.renderer.triggerShake(0.15 + chargeRatio * 0.85);
-                    this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.3 + chargeRatio * 0.7);
-                    Sound.kick(chargeRatio);
-                    if (this.ball.vx < 0) this.addMomentum('blue');
-                }
-                this.remoteInput.kickRelease = false;
-                this.remoteInput.kickChargeTime = 0;
-            }
-
-            if (this.remoteInput.switchPlayer) {
-                this.switchToNearestTeammate_remote();
-                this.remoteInput.switchPlayer = false;
-            }
-        }
-
-        // Local 1v1: Player 2 input (blue team)
-        if (this.isLocal1v1 && this.humanPlayer2 &&
-            this.humanPlayer2.powerUp !== 'frozen' && this.humanPlayer2.stunTimer <= 0) {
-
-            this.humanPlayer2.applyInput(this.input2.x, this.input2.y);
-
-            if (this.input2.kickCharging) {
-                this.humanPlayer2.kickChargeRatio = Math.min((performance.now() - this.input2.kickChargeStart) / 1500, 1);
-                const slowFactor = 1 - this.humanPlayer2.kickChargeRatio * 0.015;
-                this.humanPlayer2.vx *= Math.pow(slowFactor, Physics.dtRatio);
-                this.humanPlayer2.vy *= Math.pow(slowFactor, Physics.dtRatio);
-            } else {
-                this.humanPlayer2.kickChargeRatio = 0;
-            }
-
-            if (this.input2.kickRelease) {
-                const chargeRatio = Math.min(this.input2.kickChargeTime / 1500, 1);
-                this.hitNearbyPlayers(this.humanPlayer2, chargeRatio);
-                if (this.humanPlayer2.kick(this.ball, chargeRatio)) {
-                    this.stats.shots.blue++;
-                    this.renderer.triggerShake(0.15 + chargeRatio * 0.85);
-                    this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.3 + chargeRatio * 0.7);
-                    Sound.kick(chargeRatio);
-                    if (this.ball.vx < 0) this.addMomentum('blue');
-                }
-                this.input2.kickRelease = false;
-                this.input2.kickChargeTime = 0;
-            }
-
-            if (this.input2.switchPlayer) {
-                this.switchToNearestTeammate_p2();
-                this.input2.switchPlayer = false;
             }
         }
 
@@ -1064,15 +715,7 @@ class Game {
             if (action.kick) {
                 const cr = action.chargeRatio || 0.3;
                 this.hitNearbyPlayers(player, cr);
-                if (player.kick(this.ball, cr)) {
-                    this.stats.shots[player.team]++;
-                    const shakeIntensity = 0.15 + cr * 0.55;
-                    this.renderer.triggerShake(shakeIntensity);
-                    this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.3 + cr * 0.5);
-                    Sound.kick(cr);
-                    const towardGoal = (player.team === 'red' && this.ball.vx > 0) || (player.team === 'blue' && this.ball.vx < 0);
-                    if (towardGoal) this.addMomentum(player.team);
-                }
+                if (player.kick(this.ball, cr)) this._onKick(player, cr, 0.55, 0.5);
             }
         }
 
@@ -1108,8 +751,8 @@ class Game {
         for (const p of this.players) {
             if (p.dashReady && p.powerUp === 'dash') {
                 // Find movement direction (use velocity or input)
-                let dx = p.vx;
-                let dy = p.vy;
+                const dx = p.vx;
+                const dy = p.vy;
                 const speed = Math.sqrt(dx * dx + dy * dy);
                 if (speed > 0.5) {
                     const n = Physics.normalize(dx, dy);
@@ -1143,11 +786,10 @@ class Game {
         }
 
         // Ball pull ability: active pull attracts ball to player (max range limited)
-        const pullMaxRange = 150; // Only works within 150px
         for (const p of this.players) {
             if (p.pullActive) {
                 const dist = Physics.distance(p, this.ball);
-                if (dist >= pullMaxRange) {
+                if (dist >= PULL_RANGE) {
                     // Out of range — cancel pull and start cooldown
                     p.pullActive = false;
                     p.pullCooldown = p.pullCooldownTime;
@@ -1156,7 +798,7 @@ class Game {
                     const dy = p.y - this.ball.y;
                     const n = Physics.normalize(dx, dy);
                     // Pull force falls off with distance (stronger when closer)
-                    const falloff = 1 - (dist / pullMaxRange);
+                    const falloff = 1 - (dist / PULL_RANGE);
                     const pullStrength = 0.25 * falloff * Physics.dtRatio;
                     this.ball.vx += n.x * pullStrength;
                     this.ball.vy += n.y * pullStrength;
@@ -1165,30 +807,6 @@ class Game {
                     this.ball.vy *= Math.pow(0.985, Physics.dtRatio);
                 }
             }
-        }
-
-        // Handle pull input for human player (must be in range) — skipped in lockstep
-        if (!this.isLockstep && this.humanPlayer && this.input.pull && !this.humanPlayer.pullActive && this.humanPlayer.pullCooldown <= 0
-            && Physics.distance(this.humanPlayer, this.ball) < pullMaxRange) {
-            this.humanPlayer.activatePull();
-            Sound.pullActivate();
-        }
-        if (!this.isLockstep && this.humanPlayer && !this.input.pull && this.humanPlayer.pullActive) {
-            // Released pull early — end it and start cooldown
-            this.humanPlayer.pullActive = false;
-            this.humanPlayer.pullDuration = 0;
-            this.humanPlayer.pullCooldown = this.humanPlayer.pullCooldownTime;
-        }
-
-        // P2 pull (local 1v1, must be in range)
-        if (this.isLocal1v1 && this.humanPlayer2 && this.input2.pull && !this.humanPlayer2.pullActive && this.humanPlayer2.pullCooldown <= 0
-            && Physics.distance(this.humanPlayer2, this.ball) < pullMaxRange) {
-            this.humanPlayer2.activatePull();
-        }
-        if (this.isLocal1v1 && this.humanPlayer2 && !this.input2.pull && this.humanPlayer2.pullActive) {
-            this.humanPlayer2.pullActive = false;
-            this.humanPlayer2.pullDuration = 0;
-            this.humanPlayer2.pullCooldown = this.humanPlayer2.pullCooldownTime;
         }
 
         // Update entities
@@ -1242,52 +860,24 @@ class Game {
                 if (ballSpeed > 3) {
                     this.ball.lastKickedBy = p;
                 }
-
             }
 
-            // Auto kick on contact: if player is charging (any amount) and touches ball, kick with current charge
-            if (collided && p === this.humanPlayer && this.input.kickCharging) {
+            // Auto kick on contact: a human charging (any amount) who touches
+            // the ball kicks it with the current charge. The rest of that
+            // charge is spent — releasing the button afterwards does nothing.
+            if (collided && p.chargeTicks > 0 && !p.chargeLock) {
                 const cr = p.kickChargeRatio || 0.1;
-                p.kick(this.ball, cr);
-                this.stats.shots.red++;
-                const shakeIntensity = 0.15 + cr * 0.85;
-                this.renderer.triggerShake(shakeIntensity);
-                this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.3 + cr * 0.7);
-                Sound.kick(cr);
-                this.input.kickCharging = false;
-                this.input.kickRelease = false;
-                this.input.kickChargeTime = 0;
-                p.kickChargeRatio = 0;
-            }
-
-            // Auto kick on contact for P2 (local 1v1)
-            if (collided && this.isLocal1v1 && p === this.humanPlayer2 && this.input2.kickCharging) {
-                const cr = p.kickChargeRatio || 0.1;
-                p.kick(this.ball, cr);
-                this.stats.shots.blue++;
-                const shakeIntensity = 0.15 + cr * 0.85;
-                this.renderer.triggerShake(shakeIntensity);
-                this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.3 + cr * 0.7);
-                Sound.kick(cr);
-                this.input2.kickCharging = false;
-                this.input2.kickRelease = false;
-                this.input2.kickChargeTime = 0;
-                p.kickChargeRatio = 0;
-            }
-
-            // Auto kick on contact for remote player (online host)
-            if (collided && this.isOnline && this.isHost && p === this.remoteHumanPlayer && this.remoteInput.kickCharging) {
-                const cr = p.kickChargeRatio || 0.1;
-                p.kick(this.ball, cr);
-                this.stats.shots.blue++;
-                const shakeIntensity = 0.15 + cr * 0.85;
-                this.renderer.triggerShake(shakeIntensity);
-                this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.3 + cr * 0.7);
-                Sound.kick(cr);
-                this.remoteInput.kickCharging = false;
-                this.remoteInput.kickRelease = false;
-                this.remoteInput.kickChargeTime = 0;
-                p.kickChargeRatio = 0;
+                if (p.kick(this.ball, cr)) {
+                    this._onKick(p, cr, 0.85, 0.7);
+                    p.chargeTicks = 0;
+                    p.kickChargeRatio = 0;
+                    p.chargeLock = true;
+                    if (p === this.humanPlayer) {
+                        this.input.kickCharging = false;
+                        this.input.kickRelease = false;
+                        this.input.kickChargeTime = 0;
+                    }
+                }
             }
 
             // Power kick ball hits any player: knock them back and stun based on speed
@@ -1319,14 +909,13 @@ class Game {
             }
         }
 
-        // Player-player collisions
+        // Player-player collisions (no sound by design)
         for (let i = 0; i < this.players.length; i++) {
             for (let j = i + 1; j < this.players.length; j++) {
-                const hit = Physics.resolveCircleCollision(
+                Physics.resolveCircleCollision(
                     this.players[i], this.players[j],
                     Physics.PLAYER_BOUNCE, Physics.PLAYER_BOUNCE
                 );
-                // No sound on player-player collision (by design)
             }
         }
 
@@ -1432,6 +1021,12 @@ class Game {
             }
         }
 
+        // Super kick ends once the ball has slowed down
+        if (this.ball.superKick > 0) {
+            const spd = Math.sqrt(this.ball.vx * this.ball.vx + this.ball.vy * this.ball.vy);
+            if (spd < 3) this.ball.superKick = 0;
+        }
+
         // Track possession
         let closestRed = Infinity, closestBlue = Infinity;
         for (const p of this.players) {
@@ -1466,11 +1061,79 @@ class Game {
                 this.scoreGoal(goal);
             }
         }
+    }
 
-        // Online: host sends state to guest
-        if (this.isOnline && this.isHost && this.network) {
-            this.network.sendState(this);
+    // Apply one tick of a human's input to the player they control. Pure
+    // function of (state, input) so online peers stay in sync. Returns the
+    // player the slot controls afterwards (changes on SWAP).
+    _applyHumanInput(player, inp, slot) {
+        const isLocal = slot === this._mySlot;
+        const canAct = player.powerUp !== 'frozen' && player.stunTimer <= 0;
+
+        if (canAct) player.applyInput(inp.x, inp.y);
+
+        // Kick release. If an auto-kick on contact already spent this charge,
+        // the release just clears that lock.
+        if (inp.release) {
+            if (player.chargeLock) {
+                player.chargeLock = false;
+            } else if (canAct) {
+                this.hitNearbyPlayers(player, inp.cr);
+                if (player.kick(this.ball, inp.cr)) this._onKick(player, inp.cr, 0.85, 0.7);
+            }
         }
+
+        // Charging: power ramps up while held, and the player slows down
+        if (inp.held && !player.chargeLock) {
+            player.chargeTicks++;
+            player.kickChargeRatio = Math.min(player.chargeTicks * TICK_MS / KICK_CHARGE_MS, 1);
+            if (canAct) {
+                const slowFactor = Math.pow(1 - player.kickChargeRatio * 0.015, Physics.dtRatio);
+                player.vx *= slowFactor;
+                player.vy *= slowFactor;
+            }
+        } else {
+            player.chargeTicks = 0;
+            player.kickChargeRatio = 0;
+            if (!inp.held) player.chargeLock = false;
+        }
+
+        // Pull (hold): must start within range, releasing ends it early
+        if (inp.pull) {
+            if (!player.pullActive && player.pullCooldown <= 0 && Physics.distance(player, this.ball) < PULL_RANGE) {
+                player.activatePull();
+                if (isLocal) Sound.pullActivate();
+            }
+        } else if (player.pullActive) {
+            player.pullActive = false;
+            player.pullDuration = 0;
+            player.pullCooldown = player.pullCooldownTime;
+        }
+
+        if (inp.sw) {
+            const next = this._swapToNearestTeammate(player);
+            if (isLocal) Sound.switchPlayer();
+            if (next !== player) {
+                // The held kick carries over to the new player
+                next.chargeTicks = player.chargeTicks;
+                next.chargeLock = player.chargeLock;
+                next.kickChargeRatio = player.kickChargeRatio;
+                player.chargeTicks = 0;
+                player.chargeLock = false;
+                player.kickChargeRatio = 0;
+            }
+            return next;
+        }
+        return player;
+    }
+
+    _onKick(player, cr, shakeScale, flashScale) {
+        this.stats.shots[player.team]++;
+        this.renderer.triggerShake(0.15 + cr * shakeScale);
+        this.renderer.spawnHitFlash(this.ball.x, this.ball.y, 0.3 + cr * flashScale);
+        Sound.kick(cr);
+        const towardGoal = (player.team === 'red' && this.ball.vx > 0) || (player.team === 'blue' && this.ball.vx < 0);
+        if (towardGoal) this.addMomentum(player.team);
     }
 
     scoreGoal(team) {
@@ -1478,13 +1141,9 @@ class Game {
         const fireLevel = this.ball.fireLevel || 0;
         const goalPoints = fireLevel >= 2 ? 3 : fireLevel >= 1 ? 2 : 1;
 
-        if (team === 'red') {
-            this.redScore += goalPoints;
-            if (this._dom.redScore) this._dom.redScore.textContent = this.redScore;
-        } else {
-            this.blueScore += goalPoints;
-            if (this._dom.blueScore) this._dom.blueScore.textContent = this.blueScore;
-        }
+        if (team === 'red') this.redScore += goalPoints;
+        else this.blueScore += goalPoints;
+        this._updateScoreHud();
 
         // Track who scored — only credit if they scored for their own team (not own goal)
         const scorer = this.ball.lastKickedBy;
@@ -1517,7 +1176,7 @@ class Game {
         if (this._dom.goalText) this._dom.goalText.textContent = goalText;
         if (this._dom.goalScorer) {
             this._dom.goalScorer.textContent =
-                scorer ? `${scorer.team.toUpperCase()} Team${goalPoints > 1 ? ' (+' + goalPoints + ')' : ''}` : '';
+                scorer ? `${team.toUpperCase()} Team${goalPoints > 1 ? ' (+' + goalPoints + ')' : ''}` : '';
         }
         if (notif) notif.classList.remove('hidden');
 
@@ -1528,13 +1187,9 @@ class Game {
         this.kickoffTeam = team === 'red' ? 'blue' : 'red';
 
         // Goal sound + heavy screen shake (bigger for fire goals)
-        if (fireLevel >= 1) {
-            Sound.fireGoal(fireLevel);
-            this.renderer.triggerShake(1.0);
-        } else {
-            Sound.goal();
-            this.renderer.triggerShake(1.0);
-        }
+        if (fireLevel >= 1) Sound.fireGoal(fireLevel);
+        else Sound.goal();
+        this.renderer.triggerShake(1.0);
 
         // Slow-motion on goal (timer-based, not setTimeout)
         this.timeScale = 0.3;
@@ -1551,22 +1206,6 @@ class Game {
         const netSide = team === 'blue' ? 'left' : 'right';
         this.renderer.triggerNetRipple(netSide, this.ball.y, this.field);
 
-        // Notify guest about goal
-        if (this.isOnline && this.isHost && this.network) {
-            this.network.send({ t: 'goal', d: { team: team } });
-        }
-        // P2P host: broadcast goal to peers with full context so their overlay matches
-        if (this.isP2PHost && this.p2p) {
-            this.p2p.broadcastGoal({
-                team,
-                redScore: this.redScore,
-                blueScore: this.blueScore,
-                fireLevel,
-                points: goalPoints,
-                isOwnGoal,
-            });
-        }
-
         // Sudden death: first goal wins
         if (this.suddenDeath) {
             this._scheduleEndMatch(2100);
@@ -1581,11 +1220,11 @@ class Game {
         }
     }
 
+    // Ends the match after `ms` of game time (tick-based, so online peers
+    // end on the same tick).
     _scheduleEndMatch(ms) {
-        // Guard against double scheduling (e.g. goal-limit hit on a sudden-death goal)
-        if (this._endMatchScheduled) return;
-        this._endMatchScheduled = true;
-        this._setTimeout(() => this.endMatch(), ms);
+        if (this._endMatchTimer > 0) return;
+        this._endMatchTimer = ms;
     }
 
     resetAfterGoal() {
@@ -1599,33 +1238,23 @@ class Game {
     }
 
     endMatch() {
+        if (this.matchOver) return;
         this.isRunning = false;
         this.matchOver = true;
         this.suddenDeath = false;
         this.suddenDeathTimer = 0;
         this.suddenDeathShrink = 0;
-        Physics.MAX_BALL_SPEED = this._originalMaxBallSpeed;
         this.resetMapPhysics();
-        if (this._dom && this._dom.timer) this._dom.timer.style.color = '';
+        if (this._dom.timer) this._dom.timer.style.color = '';
         Sound.stopMusic();
         Sound.whistle(true);
-
-        // Notify guest about match end
-        if (this.isOnline && this.isHost && this.network) {
-            this.network.send({ t: 'end', d: { red: this.redScore, blue: this.blueScore } });
-        }
-        // P2P host: broadcast match end to peers
-        if (this.isP2PHost && this.p2p) {
-            this.p2p.broadcastMatchEnd({ red: this.redScore, blue: this.blueScore });
-        }
 
         const resultOverlay = this._dom.resultOverlay;
         const title = this._dom.resultTitle;
         const score = this._dom.resultScore;
         const stats = this._dom.matchStats;
 
-        // Determine local team
-        const localTeam = (this.isOnline && !this.isHost) ? 'blue' : 'red';
+        const localTeam = this._localTeam;
         const localScore = localTeam === 'red' ? this.redScore : this.blueScore;
         const remoteScore = localTeam === 'red' ? this.blueScore : this.redScore;
 
@@ -1664,6 +1293,7 @@ class Game {
         if (stats) this._renderMatchStats(stats, redPoss, this.isSpectator);
 
         if (resultOverlay) resultOverlay.classList.remove('hidden');
+        if (this.onMatchEnd) this.onMatchEnd();
     }
 
     // Build red-blue "X - Y" score markup safely (no innerHTML with interpolation)
@@ -1732,15 +1362,21 @@ class Game {
         this.momentum[team] = Math.min(this.momentum.max, this.momentum[team] + amount);
     }
 
+    _isControlledByHuman(player) {
+        for (const p of this._controlled.values()) if (p === player) return true;
+        return false;
+    }
+
     // Swap control from `current` to the teammate closest to the ball.
     // Returns the new human player (or `current` if no swap happened).
-    // Idempotent: never creates duplicate AI controllers for the same player.
+    // Never swaps onto a teammate another human is already controlling, and
+    // never creates duplicate AI controllers for the same player.
     _swapToNearestTeammate(current) {
         if (!current) return current;
         let nearest = null;
         let nearestDist = Infinity;
         for (const p of this.players) {
-            if (p.team !== current.team || p === current) continue;
+            if (p.team !== current.team || p === current || this._isControlledByHuman(p)) continue;
             const d = Physics.distance(p, this.ball);
             if (d < nearestDist) { nearestDist = d; nearest = p; }
         }
@@ -1750,7 +1386,7 @@ class Game {
         if (!this.aiControllers.some(c => c.player === current)) {
             this.aiControllers.push({
                 player: current,
-                ai: new AIController(this.settings.difficulty || 'normal'),
+                ai: this.isLockstep ? new AIController('normal') : new AIController(this.settings.difficulty || 'normal'),
             });
         }
         nearest.isHuman = true;
@@ -1758,171 +1394,296 @@ class Game {
         return nearest;
     }
 
-    switchToNearestTeammate() {
-        this.humanPlayer = this._swapToNearestTeammate(this.humanPlayer);
+    // --- Online state snapshot / checksum -----------------------------------
+
+    // Everything the simulation reads, in plain JSON-safe form. Used for the
+    // periodic desync checksum and to resync a peer from the host.
+    serializeSim() {
+        const idx = (p) => (p ? this.players.indexOf(p) : -1);
+        const b = this.ball;
+        const pm = this.powerUpManager;
+        return {
+            t: this.tickCount,
+            rng: this.rng.s,
+            sc: [this.redScore, this.blueScore, this.timeRemaining],
+            g: [this.isGoalScored ? 1 : 0, this.goalTimer, this._endMatchTimer],
+            ko: [this.kickoffTeam, this.kickoffActive ? 1 : 0],
+            ts: [this.timeScale, this.slowMoTimer],
+            mo: [this.momentum.red, this.momentum.blue],
+            cb: [this.combo.team, this.combo.count],
+            sd: [this.suddenDeath ? 1 : 0, this.suddenDeathTimer, this.suddenDeathShrink, Physics.MAX_BALL_SPEED],
+            st: [this.stats.possession.red, this.stats.possession.blue, this.stats.shots.red, this.stats.shots.blue],
+            p: this.players.map(p => [
+                p.x, p.y, p.vx, p.vy, p.kickCooldown, p.powerUp, p.powerUpTimer,
+                p.goals, p.kicks, p.stunTimer, p.momentumBonus, p.dashReady ? 1 : 0,
+                p.pullActive ? 1 : 0, p.pullCooldown, p.pullDuration, p.isHuman ? 1 : 0,
+                p.chargeTicks, p.chargeLock ? 1 : 0, p.kickChargeRatio,
+            ]),
+            b: [b.x, b.y, b.vx, b.vy, idx(b.lastKickedBy), b.spin, b.superKick, b.superTarget,
+                b.fireLevel, b.fireDuration, b.ghost ? 1 : 0, b.ghostTimer],
+            pu: [pm.spawnTimer, pm.powerUps.map(pu => [pu.x, pu.y, pu.radius, pu.type.id])],
+            ai: this.aiControllers.map(({ player, ai }) => [
+                idx(player), ai.targetX, ai.targetY, ai.decisionTimer, ai.role, ai.aimX, ai.aimY,
+            ]),
+            ctl: Array.from(this._controlled, ([slot, p]) => [slot, idx(p)]),
+        };
     }
 
-    switchToNearestTeammate_remote() {
-        this.remoteHumanPlayer = this._swapToNearestTeammate(this.remoteHumanPlayer);
+    stateHash() {
+        return hashValue(0x811c9dc5, this.serializeSim()) | 0;
     }
 
-    switchToNearestTeammate_p2() {
-        this.humanPlayer2 = this._swapToNearestTeammate(this.humanPlayer2);
-    }
+    restoreSim(s) {
+        this.tickCount = s.t;
+        this.rng.s = s.rng;
+        [this.redScore, this.blueScore, this.timeRemaining] = s.sc;
+        this.isGoalScored = s.g[0] === 1;
+        this.goalTimer = s.g[1];
+        this._endMatchTimer = s.g[2];
+        this.kickoffTeam = s.ko[0];
+        this.kickoffActive = s.ko[1] === 1;
+        [this.timeScale, this.slowMoTimer] = s.ts;
+        [this.momentum.red, this.momentum.blue] = s.mo;
+        this.combo = { team: s.cb[0], count: s.cb[1] };
+        this.suddenDeath = s.sd[0] === 1;
+        this.suddenDeathTimer = s.sd[1];
+        this.suddenDeathShrink = s.sd[2];
+        Physics.MAX_BALL_SPEED = s.sd[3];
+        [this.stats.possession.red, this.stats.possession.blue, this.stats.shots.red, this.stats.shots.blue] = s.st;
 
-    render() {
-        this.renderer.clear();
-
-        // Apply field view scale for training-size matches (trained AI watch mode)
-        const ctx = this.renderer.ctx;
-        const fvs = this.renderer.fieldViewScale;
-        if (fvs) {
-            ctx.save();
-            if (this.cameraZoom !== 1) {
-                // Camera follows player (or ball in spectator mode)
-                const target = this.humanPlayer || this.ball;
-                // Smooth camera follow
-                const lerp = 0.1;
-                this._cameraX += (target.x - this._cameraX) * lerp;
-                this._cameraY += (target.y - this._cameraY) * lerp;
-                const zoom = fvs * this.cameraZoom;
-                const halfW = this.renderer.w / 2;
-                const halfH = this.renderer.h / 2;
-                ctx.translate(halfW, halfH);
-                ctx.scale(zoom, zoom);
-                ctx.translate(-this._cameraX, -this._cameraY);
-            } else {
-                ctx.translate(this.renderer.fieldViewOffsetX, this.renderer.fieldViewOffsetY);
-                ctx.scale(fvs, fvs);
-            }
+        for (let i = 0; i < this.players.length && i < s.p.length; i++) {
+            const p = this.players[i];
+            const a = s.p[i];
+            p.x = a[0]; p.y = a[1]; p.vx = a[2]; p.vy = a[3];
+            p.kickCooldown = a[4]; p.powerUp = a[5]; p.powerUpTimer = a[6];
+            p.goals = a[7]; p.kicks = a[8]; p.stunTimer = a[9]; p.momentumBonus = a[10];
+            p.dashReady = a[11] === 1; p.pullActive = a[12] === 1;
+            p.pullCooldown = a[13]; p.pullDuration = a[14]; p.isHuman = a[15] === 1;
+            p.chargeTicks = a[16]; p.chargeLock = a[17] === 1; p.kickChargeRatio = a[18];
         }
 
-        this.renderer.trackedBall = this.ball;
-        this.renderer._currentMapType = this.field.mapType;
-        this.renderer.drawField(this.field);
+        const b = this.ball;
+        const ba = s.b;
+        b.x = ba[0]; b.y = ba[1]; b.vx = ba[2]; b.vy = ba[3];
+        b.lastKickedBy = ba[4] >= 0 ? this.players[ba[4]] : null;
+        b.spin = ba[5]; b.superKick = ba[6]; b.superTarget = ba[7];
+        b.fireLevel = ba[8]; b.fireDuration = ba[9]; b.ghost = ba[10] === 1; b.ghostTimer = ba[11];
+
+        const pm = this.powerUpManager;
+        pm.spawnTimer = s.pu[0];
+        pm.powerUps = s.pu[1].map(([x, y, radius, typeId]) => ({
+            x, y, radius,
+            type: pm.types.find(t => t.id === typeId) || pm.types[0],
+            bobTimer: 0, scale: 1, rotateTimer: 0, pulseTimer: 0, spawnTime: Date.now(),
+        }));
+
+        this.aiControllers = s.ai.map(([pi, tx, ty, dtm, role, ax, ay]) => {
+            const ai = new AIController('normal');
+            ai.targetX = tx; ai.targetY = ty; ai.decisionTimer = dtm;
+            ai.role = role; ai.aimX = ax; ai.aimY = ay;
+            return { player: this.players[pi], ai };
+        });
+
+        this._controlled = new Map(s.ctl.map(([slot, pi]) => [slot, this.players[pi]]));
+        const mine = this._controlled.get(this._mySlot);
+        if (mine) this.humanPlayer = mine;
+
+        this._snapPrev();
+        this._updateScoreHud();
+        this._updateTimerHud();
+        if (this._dom.goalNotif && !this.isGoalScored) this._dom.goalNotif.classList.add('hidden');
+    }
+
+    // --- HUD ----------------------------------------------------------------
+
+    _updateScoreHud() {
+        if (this._hud.red !== this.redScore && this._dom.redScore) {
+            this._dom.redScore.textContent = this.redScore;
+            this._hud.red = this.redScore;
+        }
+        if (this._hud.blue !== this.blueScore && this._dom.blueScore) {
+            this._dom.blueScore.textContent = this.blueScore;
+            this._hud.blue = this.blueScore;
+        }
+    }
+
+    // Writes the clock only when the shown text changes (it ticks 60x/s)
+    _updateTimerHud() {
+        const el = this._dom.timer;
+        if (!el) return;
+        let text;
+        if (this.practiceMode) {
+            text = 'PRACTICE';
+        } else {
+            const ms = this.suddenDeath ? this.suddenDeathTimer : this.timeRemaining;
+            const secs = Math.ceil(ms / 1000);
+            text = `${Math.floor(secs / 60)}:${(secs % 60).toString().padStart(2, '0')}`;
+        }
+        if (text !== this._hud.timer) {
+            el.textContent = text;
+            this._hud.timer = text;
+            el.style.color = this.suddenDeath ? '#ff4444' : '';
+        }
+    }
+
+    // Charge shown on this device: driven by the real button so it responds
+    // instantly, even online where the simulation runs a few ticks behind.
+    _localChargeRatio() {
+        const hp = this.humanPlayer;
+        if (!hp || !this.input.kickCharging) return 0;
+        if (hp.powerUp === 'frozen' || hp.stunTimer > 0) return 0;
+        return Math.min((performance.now() - (this.input.kickChargeStart || performance.now())) / KICK_CHARGE_MS, 1);
+    }
+
+    _updateKickChargeMeter(ratio) {
+        const btn = this._dom.kickBtn;
+        if (!btn) return;
+        const charging = this.input.kickCharging && ratio > 0;
+        const q = charging ? Math.round(ratio * 100) / 100 : 0;
+        if (q === this._hud.charge) return;
+        this._hud.charge = q;
+        if (charging) {
+            btn.classList.add('charging');
+            btn.style.setProperty('--charge', q.toFixed(2));
+        } else {
+            btn.classList.remove('charging');
+            btn.style.setProperty('--charge', '0');
+        }
+    }
+
+    _updatePullButton() {
+        const pullBtn = this._dom.pullBtn;
+        const hp = this.humanPlayer;
+        if (!pullBtn || !hp) return;
+        let state;
+        if (hp.pullActive || hp.pullCooldown <= 0) state = 'PULL';
+        else state = Math.ceil(hp.pullCooldown / 1000) + 's';
+        if (state === this._hud.pull) return;
+        this._hud.pull = state;
+        pullBtn.textContent = state;
+        pullBtn.classList.toggle('on-cooldown', state !== 'PULL');
+    }
+
+    // --- Rendering ----------------------------------------------------------
+
+    // Move entities to their interpolated positions for drawing. Returns
+    // true if positions were changed and must be restored afterwards.
+    _applyInterpolation(alpha) {
+        if (alpha >= 0.999 || !this.ball) return false;
+        const lerp = (e, maxStep) => {
+            e._rx = e.x;
+            e._ry = e.y;
+            if (e._px === undefined) return;
+            const dx = e.x - e._px;
+            const dy = e.y - e._py;
+            if (dx * dx + dy * dy > maxStep * maxStep) return;
+            e.x = e._px + dx * alpha;
+            e.y = e._py + dy * alpha;
+        };
+        for (const p of this.players) lerp(p, INTERP_MAX_PLAYER);
+        lerp(this.ball, INTERP_MAX_BALL);
+        return true;
+    }
+
+    _undoInterpolation() {
+        for (const p of this.players) { p.x = p._rx; p.y = p._ry; }
+        this.ball.x = this.ball._rx;
+        this.ball.y = this.ball._ry;
+    }
+
+    render(alpha = 1, elapsed = TICK_MS) {
+        const interpolated = this._applyInterpolation(alpha);
+        try {
+            this._draw(elapsed);
+        } finally {
+            if (interpolated) this._undoInterpolation();
+        }
+    }
+
+    _draw(elapsed) {
+        const r = this.renderer;
+        const ctx = r.ctx;
+        r.clear();
+
+        // World space (camera)
+        const fvs = r.fieldViewScale;
+        ctx.save();
+        if (this.cameraZoom !== 1) {
+            // Camera follows player (or ball in spectator mode)
+            const target = this.humanPlayer || this.ball;
+            const follow = 1 - Math.pow(0.9, elapsed / TICK_MS);
+            this._cameraX += (target.x - this._cameraX) * follow;
+            this._cameraY += (target.y - this._cameraY) * follow;
+            const zoom = fvs * this.cameraZoom;
+            ctx.translate(r.w / 2, r.h / 2);
+            ctx.scale(zoom, zoom);
+            ctx.translate(-this._cameraX, -this._cameraY);
+        } else {
+            ctx.translate(r.fieldViewOffsetX, r.fieldViewOffsetY);
+            ctx.scale(fvs, fvs);
+        }
+
+        r.trackedBall = this.ball;
+        r._currentMapType = this.field.mapType;
+        r.drawField(this.field);
 
         // Kickoff barrier visual
         if (this.kickoffActive && this.kickoffTeam) {
             const scoringTeam = this.kickoffTeam === 'red' ? 'blue' : 'red';
-            this.renderer.drawKickoffBarrier(this.field, scoringTeam);
-            this.renderer.drawKickoffBarrierLine(this.field, this.kickoffTeam);
+            r.drawKickoffBarrier(this.field, scoringTeam);
+            r.drawKickoffBarrierLine(this.field, this.kickoffTeam);
         }
 
-        // Power-ups
-        this.powerUpManager.draw(this.renderer.ctx);
+        this.powerUpManager.draw(ctx);
 
-        // Players
+        const chargeRatio = this._localChargeRatio();
         for (const p of this.players) {
-            const isControlled = (p === this.humanPlayer) || (p === this.humanPlayer2);
-            this.renderer.drawPlayer(p, isControlled);
+            const isControlled = p === this.humanPlayer;
+            r.drawPlayer(p, isControlled, isControlled ? chargeRatio : 0);
         }
 
         // Pull ability visual links (only when in range)
         for (const p of this.players) {
             if (p.pullActive) {
                 const dist = Physics.distance(p, this.ball);
-                if (dist < 150) {
-                    this.renderer.drawPullLink(p, this.ball, dist);
-                }
+                if (dist < PULL_RANGE) r.drawPullLink(p, this.ball, dist);
             }
         }
 
-        // Pull cooldown indicator for controlled players
-        if (this.humanPlayer) {
-            this.renderer.drawPullIndicator(this.humanPlayer);
-        }
-        if (this.humanPlayer2) {
-            this.renderer.drawPullIndicator(this.humanPlayer2);
-        }
+        // Pull cooldown indicator for the controlled player
+        if (this.humanPlayer) r.drawPullIndicator(this.humanPlayer);
 
-        // Ball
-        this.renderer.drawBall(this.ball);
+        r.drawBall(this.ball);
+        r.drawDashTrails();
+        r.drawHitFlashes();
 
-        // Dash trails
-        this.renderer.drawDashTrails();
+        if (this.suddenDeath) r.drawSuddenDeathOverlay(this.field, this.suddenDeathShrink);
 
-        // Hit flash particles
-        this.renderer.drawHitFlashes();
+        ctx.restore();
 
-        // Sudden death overlay
-        if (this.suddenDeath) {
-            this.renderer.drawSuddenDeathOverlay(this.field, this.suddenDeathShrink);
-        }
-
-        // Confetti (on top of everything)
-        this.renderer.drawConfetti();
-
-        // Combo popup
-        this.renderer.drawComboPopup();
-
-        // Sudden death label
-        if (this.suddenDeath) {
-            this.renderer.drawSuddenDeathHUD();
-        }
-
-        // Kick charge meter (visual feedback while holding KICK)
-        this._updateKickChargeMeter();
-
-        // Update pull button visual state
-        const pullBtn = this._dom.pullBtn;
-        if (pullBtn && this.humanPlayer) {
-            const hp = this.humanPlayer;
-            if (hp.pullActive) {
-                pullBtn.classList.remove('on-cooldown');
-                pullBtn.style.opacity = '';
-                pullBtn.textContent = 'PULL';
-            } else if (hp.pullCooldown > 0) {
-                pullBtn.classList.add('on-cooldown');
-                const secs = Math.ceil(hp.pullCooldown / 1000);
-                pullBtn.textContent = secs + 's';
-            } else {
-                pullBtn.classList.remove('on-cooldown');
-                pullBtn.style.opacity = '';
-                pullBtn.textContent = 'PULL';
-            }
-        }
-
-        // Restore field view scale transform
-        if (fvs) ctx.restore();
-
-        // Goal flash overlay (must be in screen space, not world space)
-        if (this.renderer.goalFlashTimer > 0) {
-            const alpha = (this.renderer.goalFlashTimer / 500) * 0.3;
-            ctx.fillStyle = this.renderer.goalFlashTeam === 'red'
+        // Screen space
+        if (r.goalFlashTimer > 0) {
+            const alpha = (r.goalFlashTimer / 500) * 0.3;
+            ctx.fillStyle = r.goalFlashTeam === 'red'
                 ? `rgba(233, 69, 96, ${alpha})`
                 : `rgba(83, 216, 251, ${alpha})`;
-            ctx.fillRect(0, 0, this.renderer.w, this.renderer.h);
+            ctx.fillRect(0, 0, r.w, r.h);
         }
+        r.drawConfetti();
+        r.drawComboPopup();
+        if (this.suddenDeath) r.drawSuddenDeathHUD();
 
-        // Draw off-screen indicators and minimap when zoomed in (in screen space)
+        // Off-screen indicators and minimap when zoomed in
         if (this.cameraZoom > 1.05) {
             this._drawOffScreenArrows(ctx);
             this._drawMinimap(ctx);
         }
 
         // End frame (restore screen shake transform)
-        this.renderer.endFrame();
-    }
+        r.endFrame();
 
-    _updateKickChargeMeter() {
-        if (!this._dom) return;
-        if (!this._dom.kickBtn) this._dom.kickBtn = document.getElementById('btn-kick');
-        const btn = this._dom.kickBtn;
-        if (!btn) return;
-        const hp = this.humanPlayer;
-        const charging = !!(this.input.kickCharging && hp && hp.powerUp !== 'frozen' && hp.stunTimer <= 0);
-        let ratio = 0;
-        if (charging) {
-            ratio = Math.min((performance.now() - (this.input.kickChargeStart || performance.now())) / 1500, 1);
-        }
-        if (charging) {
-            btn.classList.add('charging');
-            btn.style.setProperty('--charge', ratio.toFixed(3));
-        } else if (this._lastChargeRatio !== 0) {
-            btn.classList.remove('charging');
-            btn.style.setProperty('--charge', '0');
-        }
-        this._lastChargeRatio = charging ? ratio : 0;
+        this._updateKickChargeMeter(chargeRatio);
+        this._updatePullButton();
     }
 
     _worldToScreen(wx, wy) {
@@ -2043,8 +1804,24 @@ class Game {
         ctx.restore();
     }
 
+    // --- Lifecycle ----------------------------------------------------------
+
+    // RL training (AI Lab) keeps every CPU core busy; pause it while a match
+    // is on screen so the game loop gets a stable frame rate.
+    _pauseBackgroundWork() {
+        for (const orch of [window.rlOrch, window.rlOrch2v2]) {
+            if (orch && typeof orch.pause === 'function') orch.pause();
+        }
+    }
+
+    _resumeBackgroundWork() {
+        for (const orch of [window.rlOrch, window.rlOrch2v2]) {
+            if (orch && typeof orch.resume === 'function') orch.resume();
+        }
+    }
+
     pause() {
-        if (this.isOnline || this.isP2PHost || this.isLockstep) return; // No pausing in online/P2P matches
+        if (this.isLockstep) return; // No pausing in online matches
         this.isPaused = true;
         Sound.pause();
         if (this._dom.pauseOverlay) this._dom.pauseOverlay.classList.remove('hidden');
@@ -2062,33 +1839,38 @@ class Game {
         if (this._dom.resultOverlay) this._dom.resultOverlay.classList.add('hidden');
         if (this._dom.goalNotif) this._dom.goalNotif.classList.add('hidden');
         if (this._dom.powerUpNotif) this._dom.powerUpNotif.classList.add('hidden');
-        this.startMatch();
+        if (this.practiceMode) this.startPractice();
+        else this.startMatch();
     }
 
     quit() {
         this.isRunning = false;
         this.isPaused = false;
         this.matchOver = true;
+        this.isLockstep = false;
+        this.netplay = null;
+        this.onMatchEnd = null;
         if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = null; }
         this._clearAllTimers();
-        this._goalNotifTimer = null;
         this._powerUpNotifTimer = null;
-        this._endMatchScheduled = false;
+        this._endMatchTimer = 0;
 
         // Reset per-match input state so a stale "kick held" / "movement" doesn't
         // leak into the next match.
-        this.input.x = 0; this.input.y = 0;
-        this.input.kick = false;
-        this.input.kickCharging = false; this.input.kickRelease = false;
-        this.input.kickChargeTime = 0;
-        this.input.switchPlayer = false; this.input.pull = false;
-        this.input2.x = 0; this.input2.y = 0;
-        this.input2.kickCharging = false; this.input2.kickRelease = false;
-        this.input2.kickChargeTime = 0;
-        this.input2.switchPlayer = false; this.input2.pull = false;
+        const inp = this.input;
+        inp.x = 0; inp.y = 0;
+        inp.kickCharging = false; inp.kickRelease = false;
+        inp.kickChargeTime = 0;
+        inp.switchPlayer = false; inp.pull = false;
 
         this.resetMapPhysics();
+        Physics.GAME_SPEED = this._baseGameSpeed;
         Sound.stopMusic();
+        this._resumeBackgroundWork();
+        if (this._dom.kickBtn) {
+            this._dom.kickBtn.classList.remove('charging');
+            this._dom.kickBtn.style.setProperty('--charge', '0');
+        }
         if (this._dom.pauseOverlay) this._dom.pauseOverlay.classList.add('hidden');
         if (this._dom.resultOverlay) this._dom.resultOverlay.classList.add('hidden');
         if (this._dom.goalNotif) this._dom.goalNotif.classList.add('hidden');

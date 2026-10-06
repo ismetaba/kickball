@@ -40,6 +40,10 @@ class Player {
         this.pullDuration = 0;
         this.pullMaxDuration = 1000;
         this.pullCooldownTime = 8000;
+        // Human kick-charge state, driven by per-tick input so every online
+        // peer computes the same charge (see Game._applyHumanInput).
+        this.chargeTicks = 0;
+        this.chargeLock = false;
     }
 
     reset() {
