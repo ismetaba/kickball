@@ -5,18 +5,18 @@
 // hits while offline. Install uses allSettled rather than cache.addAll() so
 // that a single missing/renamed asset can never reject the whole install and
 // silently disable offline support (the bug that previously shipped).
-const CACHE_NAME = 'kickzone-v3';
+const CACHE_NAME = 'kickzone-v4';
 const ASSETS = [
   '/',
   '/index.html',
   '/manifest.json',
-  '/css/style.css?v=24',
+  '/css/style.css?v=25',
   // Shared simulation core
   '/shared/constants.js?v=1',
   '/shared/physics.js?v=1',
-  '/shared/entities.js?v=1',
-  '/shared/ai.js?v=1',
-  '/shared/powerups.js?v=1',
+  '/shared/entities.js?v=2',
+  '/shared/ai.js?v=3',
+  '/shared/powerups.js?v=2',
   // RL subsystem
   '/js/rl/nn.js?v=10',
   '/js/rl/encoder.js?v=10',
@@ -26,15 +26,16 @@ const ASSETS = [
   '/js/rl/trainer.js?v=12',
   '/js/rl/runtime.js?v=10',
   '/js/rl/runtime2v2.js?v=1',
-  '/js/rl/orchestrator.js?v=17',
-  '/js/rl/orchestrator2v2.js?v=1',
+  '/js/rl/orchestrator.js?v=18',
+  '/js/rl/orchestrator2v2.js?v=2',
   // Client app
-  '/js/audio.js?v=4',
-  '/js/renderer.js?v=22',
-  '/js/game.js?v=34',
-  '/js/p2p.js?v=2',
-  '/js/controls.js?v=24',
-  '/js/ui.js?v=26',
+  '/js/audio.js?v=5',
+  '/js/renderer.js?v=23',
+  '/js/game.js?v=35',
+  '/js/netplay.js?v=1',
+  '/js/p2p.js?v=4',
+  '/js/controls.js?v=25',
+  '/js/ui.js?v=28',
   '/js/main.js?v=23',
   // Icons
   '/icons/icon-192.png',
@@ -62,7 +63,7 @@ self.addEventListener('activate', event => {
 });
 
 self.addEventListener('fetch', event => {
-  // Only handle same-origin GETs; let cross-origin (CDN, TURN, PeerJS) pass through.
+  // Only handle same-origin GETs; let cross-origin (CDN, TURN, signaling) pass through.
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
