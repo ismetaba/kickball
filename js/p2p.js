@@ -17,7 +17,7 @@ class P2PNetwork {
         // Use local server only when running in a real browser on localhost (not Capacitor)
         const isNativeApp = typeof window.Capacitor !== 'undefined';
         const isLocalDev = !isNativeApp && (location.hostname === 'localhost' || location.hostname === '127.0.0.1');
-        this.serverUrl = serverUrl || (isLocalDev ? 'ws://localhost:8080' : 'wss://kickzone-server.fly.dev');
+        this.serverUrl = serverUrl || (isLocalDev ? 'ws://localhost:8080' : 'wss://kickzone-game.fly.dev');
         this.ws = null;
         this.isOnline = false;
         this.isHost = false;
