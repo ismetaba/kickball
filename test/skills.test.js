@@ -160,3 +160,25 @@ test('a hybrid agent lets the base model play except in its skills\' situations'
     assert.equal(agent2.skill, 'defend');
     assert.ok(red2.vx < 0, 'defend skill moved back');
 });
+
+test('a skill that takes over plays out its spell, then hands back to the base', () => {
+    Physics.dtRatio = 1.2;
+    const forward = constantPolicy({ moveX: 1 });
+    const backward = constantPolicy({ moveX: -1 });
+    // Defend may take over only when a shot is coming
+    const agent = S.SkillAgent.factory({ skills: { defend: backward } }, { base: forward, only: ['shot'] })();
+    const red = new Player(atProgress(0.4), goalCY + 200, 'red');
+    const blue = new Player(atProgress(0.9), goalCY + 200, 'blue');
+    const ball = new Ball(atProgress(0.3), goalCY);
+    ball.vx = -12;
+    const step = () => { const vx0 = red.vx; agent.update(red, ball, field, [red], [blue], 33.34); return red.vx - vx0; };
+    assert.ok(step() < 0, 'shot incoming: defend takes over');
+    // The ball stops: no longer a shot, but defend finishes its spell (the coach's hold)
+    ball.vx = 0;
+    assert.equal(agent.coach.situation, 'shot');
+    assert.ok(step() < 0, 'still defending during the hold');
+    assert.notEqual(agent.coach.situation, 'shot');
+    // Once the hold is over the coach moves on and the base model plays again
+    for (let i = 0; i < 8; i++) step();
+    assert.ok(step() > 0, 'base model back in control');
+});

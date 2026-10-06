@@ -90,6 +90,7 @@ class SkillCoach {
     constructor() {
         this.skill = null;
         this.situation = null;     // situation at the latest decision
+        this.spellSituation = null; // situation that handed control to `skill`
         this.heldMs = 0;
     }
 
@@ -101,6 +102,7 @@ class SkillCoach {
         const urgent = want === 'defend' && s.shotIncoming;
         if (want !== this.skill && (this.skill === null || this.heldMs >= MIN_HOLD_MS || urgent)) {
             this.skill = want;
+            this.spellSituation = this.situation;
             this.heldMs = 0;
         }
         return this.skill;
@@ -225,8 +227,9 @@ class SkillAgent extends LearnedAgent {
     // opts.base: a full-match Policy that plays whenever the coach picks a
     //            skill that isn't in `policies` (so skills can be added to a
     //            match model one at a time)
-    // opts.situations: with a base, the situations (SITUATIONS keys) where the
-    //            skills may play at all; the base plays everywhere else
+    // opts.situations: with a base, the situations (SITUATIONS keys) where a
+    //            skill may take over (it then plays out its spell, including
+    //            the coach's minimum hold); the base plays everywhere else
     constructor(policies, opts = {}) {
         super(opts.random);
         this.base = opts.base || null;
@@ -268,12 +271,13 @@ class SkillAgent extends LearnedAgent {
 
     _choosePolicy(player, ball, field, opp) {
         this.skill = this.coach.choose(player, ball, opp, field, STEP_MS);
-        const allowed = !this.situations || this.situations.has(this.coach.situation);
+        const allowed = !this.situations || this.situations.has(this.coach.spellSituation);
         return (allowed && this.policies[this.skill]) || this.base;
     }
 
     _onBench() {
         this.coach.skill = null;
+        this.coach.spellSituation = null;
         this.skill = null;
     }
 }
