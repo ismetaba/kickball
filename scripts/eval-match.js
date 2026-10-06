@@ -39,6 +39,7 @@ const args = parseArgs(process.argv.slice(2), {
     bundle: 'models/skills.json',
     expert: 'models/expert.json',
     json: false,        // print the result as one JSON line
+    hold: 0,            // coach's minimum hold in ms for skills/hybrid AIs (0: default)
 });
 
 // Everything random (env resets, the AIs' kick/pull draws) uses Math.random
@@ -59,15 +60,16 @@ function factoryFor(kind) {
     if (factories[kind]) return factories[kind];
     let f;
     let m;
+    const holdMs = args.hold || undefined;
     if (kind === 'skills') {
-        f = SkillAgent.factory(loadSkillBundle());
+        f = SkillAgent.factory(loadSkillBundle(), { holdMs });
     } else if (kind === 'expert') {
         const e = readJSON(args.expert);
-        if (e.type === 'skills') f = SkillAgent.factory(loadSkillBundle());
-        else if (e.type === 'hybrid') f = SkillAgent.factory(loadSkillBundle(), { base: e, only: e.skills });
+        if (e.type === 'skills') f = SkillAgent.factory(loadSkillBundle(), { holdMs: e.holdMs });
+        else if (e.type === 'hybrid') f = SkillAgent.factory(loadSkillBundle(), { base: e, only: e.skills, holdMs: e.holdMs });
         else f = MatchAgent.factory(e);
     } else if ((m = /^hybrid:(.+):([A-Za-z,]+)$/.exec(kind))) {
-        f = SkillAgent.factory(loadSkillBundle(), { base: readJSON(m[1]), only: m[2].split(',') });
+        f = SkillAgent.factory(loadSkillBundle(), { base: readJSON(m[1]), only: m[2].split(','), holdMs });
     } else if ((m = /^model(-det)?:(.+)$/.exec(kind))) {
         f = MatchAgent.factory({ policy: readJSON(m[2]).policy, threshold: !!m[1] });
     } else {

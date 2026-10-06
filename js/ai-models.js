@@ -72,7 +72,7 @@
                 expertFactory = expert.type === 'hybrid'
                     ? RLSkills.SkillAgent.factory(
                         { skills: Object.fromEntries(SKILLS.map(n => [n, bundledSkill(n)]).filter(([, m]) => m)) },
-                        { base: expert, only: expert.skills })
+                        { base: expert, only: expert.skills, holdMs: expert.holdMs })
                     : RLSkills.MatchAgent.factory(expert);
             } catch (e) {
                 console.warn('[AIModels] expert model unusable', e);

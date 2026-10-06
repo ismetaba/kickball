@@ -15,7 +15,8 @@
 // --expert skills  Expert is the coach driving the four skills
 // --expert hybrid  the --match policy plays, except where --use lets a skill
 //                  take over: skill names (all their situations) and/or coach
-//                  situations (js/rl/skills.js SITUATIONS), e.g. --use shot,carriedAtUs
+//                  situations (js/rl/skills.js SITUATIONS), e.g. --use shot,carriedAtUs;
+//                  --hold <ms> sets how long a skill keeps control at least
 const fs = require('fs');
 const path = require('path');
 const { SKILLS, SITUATIONS, packPolicy } = require('../js/rl/skills');
@@ -50,6 +51,7 @@ if (expertKind === 'match' || expertKind === 'hybrid') {
     expert = {
         kind: 'kickzone-expert', version: 1, type: expertKind,
         skills: use,
+        holdMs: args.hold ? Number(args.hold) : undefined,
         threshold: !!args.threshold,
         generation: m.generation, eval: m.eval,
         createdAt: new Date().toISOString(),

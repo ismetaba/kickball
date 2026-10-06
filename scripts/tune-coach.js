@@ -9,7 +9,7 @@
 //
 // Every candidate is played with the same seed, so they face the same
 // kickoffs and random draws. Prints the chosen situations, ready for
-// bundle-models.js --expert hybrid --use <list>.
+// bundle-models.js --expert hybrid --use <list> (with the same --hold).
 const { execFile } = require('child_process');
 const path = require('path');
 const { SITUATIONS } = require('../js/rl/skills');
@@ -22,6 +22,7 @@ const args = parseArgs(process.argv.slice(2), {
     margin: 0.02,
     jobs: 8,
     seed: 7,
+    hold: 0,            // coach's minimum hold in ms (0: default)
 });
 if (!args.base) {
     console.error('usage: node scripts/tune-coach.js --base <match model> [--bundle skills.json]');
@@ -32,7 +33,7 @@ function evalHybrid(situations) {
     const a = situations.length ? `hybrid:${args.base}:${situations.join(',')}` : `model:${args.base}`;
     const cli = [path.join(__dirname, 'eval-match.js'), '--a', a, '--b', `model:${args.base}`,
         '--bundle', args.bundle, '--matches', String(args.matches), '--seconds', String(args.seconds),
-        '--seed', String(args.seed), '--json'];
+        '--seed', String(args.seed), '--hold', String(args.hold), '--json'];
     return new Promise((resolve, reject) => {
         execFile(process.execPath, cli, { maxBuffer: 1 << 20 }, (err, stdout) => {
             if (err) reject(err); else resolve(JSON.parse(stdout.trim().split('\n').pop()));

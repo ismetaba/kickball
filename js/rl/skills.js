@@ -87,7 +87,9 @@ function pickSkill(s) {
 }
 
 class SkillCoach {
-    constructor() {
+    // holdMs: how long a skill keeps control at least, unless a shot is coming
+    constructor(holdMs = MIN_HOLD_MS) {
+        this.holdMs = holdMs;
         this.skill = null;
         this.situation = null;     // situation at the latest decision
         this.spellSituation = null; // situation that handed control to `skill`
@@ -100,7 +102,7 @@ class SkillCoach {
         const want = SITUATIONS[this.situation];
         this.heldMs += dt;
         const urgent = want === 'defend' && s.shotIncoming;
-        if (want !== this.skill && (this.skill === null || this.heldMs >= MIN_HOLD_MS || urgent)) {
+        if (want !== this.skill && (this.skill === null || this.heldMs >= this.holdMs || urgent)) {
             this.skill = want;
             this.spellSituation = this.situation;
             this.heldMs = 0;
@@ -238,7 +240,7 @@ class SkillAgent extends LearnedAgent {
             if (!policies[name] && !this.base) throw new Error('missing skill policy: ' + name);
         }
         this.policies = policies;
-        this.coach = new SkillCoach();
+        this.coach = new SkillCoach(opts.holdMs);
         this.skill = null;                 // skill in control (for debugging / HUD)
     }
 
@@ -247,6 +249,7 @@ class SkillAgent extends LearnedAgent {
     // bundle.skills[name] is a model file ({ policy, ... }) or a decoded Policy;
     // opts.base likewise (a full-match model). opts.only limits where skills
     // play: skill names (all of that skill's situations) and/or SITUATIONS keys.
+    // opts.holdMs overrides the coach's minimum hold.
     static factory(bundle, opts = {}) {
         const load = (m) => (m instanceof RLPolicy.Policy ? m : decodePolicy(m.policy));
         let situations = null;
@@ -260,7 +263,7 @@ class SkillAgent extends LearnedAgent {
             if (bundle.skills[name]) policies[name] = load(bundle.skills[name]);
         }
         const base = opts.base ? load(opts.base) : null;
-        return () => new SkillAgent(policies, { base, situations });
+        return () => new SkillAgent(policies, { base, situations, holdMs: opts.holdMs });
     }
 
     // A fixed clock and score: the skills were trained with these randomized
