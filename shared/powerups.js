@@ -28,7 +28,9 @@ class PowerUpManager {
         ];
     }
 
-    update(dt, players, suddenDeath) {
+    // `rng` (optional) must be the match's seeded RNG in online lockstep so
+    // spawns land in the same place on every peer.
+    update(dt, players, suddenDeath, rng) {
         if (!this.enabled) return null;
 
         const interval = suddenDeath ? 5000 : this.spawnInterval;
@@ -36,7 +38,7 @@ class PowerUpManager {
 
         this.spawnTimer += dt;
         if (this.spawnTimer >= interval && this.powerUps.length < maxOnField) {
-            this.spawn();
+            this.spawn(rng);
             this.spawnTimer = 0;
         }
 
@@ -65,11 +67,12 @@ class PowerUpManager {
         return null;
     }
 
-    spawn() {
-        const type = this.types[Math.floor(Math.random() * this.types.length)];
+    spawn(rng) {
+        const rand = rng ? () => rng.next() : Math.random;
+        const type = this.types[Math.floor(rand() * this.types.length)];
         const margin = 60;
-        const x = this.field.x + margin + Math.random() * (this.field.width - margin * 2);
-        const y = this.field.y + margin + Math.random() * (this.field.height - margin * 2);
+        const x = this.field.x + margin + rand() * (this.field.width - margin * 2);
+        const y = this.field.y + margin + rand() * (this.field.height - margin * 2);
 
         this.powerUps.push({
             x, y,

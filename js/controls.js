@@ -205,10 +205,6 @@ class Controls {
             this.game.input.y = 0;
             this.game.input.kickCharging = false;
             this.game.input.pull = false;
-            this.game.input2.x = 0;
-            this.game.input2.y = 0;
-            this.game.input2.kickCharging = false;
-            this.game.input2.pull = false;
             // Also reset joystick in case touchcancel was missed
             if (this.joystickActive) this._resetJoystick();
         };
@@ -229,7 +225,7 @@ class Controls {
                 e.preventDefault();
             }
 
-            // --- Player 1: WASD + Space ---
+            // --- WASD / arrows + Space (Q swap, E pull) ---
             if (key === ' ') {
                 if (!this.game.input.kickCharging) {
                     this.game.input.kickCharging = true;
@@ -241,20 +237,6 @@ class Controls {
             }
             if (key === 'e') {
                 this.game.input.pull = true;
-            }
-
-            // --- Player 2: Arrow Keys + Enter/Numpad ---
-            if (key === 'Enter') {
-                if (!this.game.input2.kickCharging) {
-                    this.game.input2.kickCharging = true;
-                    this.game.input2.kickChargeStart = performance.now();
-                }
-            }
-            if (key === '.' || key === 'Numpad0') {
-                this.game.input2.switchPlayer = true;
-            }
-            if (key === 'Shift') {
-                this.game.input2.pull = true;
             }
 
             if (key === 'Escape') {
@@ -269,7 +251,7 @@ class Controls {
             const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
             keys[key] = false;
 
-            // P1 kick release
+            // Kick release
             if (key === ' ') {
                 if (this.game.input.kickCharging) {
                     const holdTime = performance.now() - this.game.input.kickChargeStart;
@@ -278,33 +260,20 @@ class Controls {
                     this.game.input.kickRelease = true;
                 }
             }
-            // P1 pull release
+            // Pull release
             if (key === 'e') {
                 this.game.input.pull = false;
-            }
-            // P2 pull release
-            if (key === 'Shift') {
-                this.game.input2.pull = false;
-            }
-            // P2 kick release
-            if (key === 'Enter') {
-                if (this.game.input2.kickCharging) {
-                    const holdTime = performance.now() - this.game.input2.kickChargeStart;
-                    this.game.input2.kickChargeTime = Math.min(holdTime, 1500);
-                    this.game.input2.kickCharging = false;
-                    this.game.input2.kickRelease = true;
-                }
             }
         });
 
         // Keyboard movement polling
         const pollKeyboard = () => {
-            // P1: WASD (always lowercase — normalized in keydown/keyup)
+            // WASD (always lowercase — normalized in keydown/keyup) or arrows
             let kx = 0, ky = 0;
-            if (keys['a']) kx -= 1;
-            if (keys['d']) kx += 1;
-            if (keys['w']) ky -= 1;
-            if (keys['s']) ky += 1;
+            if (keys['a'] || keys['ArrowLeft']) kx -= 1;
+            if (keys['d'] || keys['ArrowRight']) kx += 1;
+            if (keys['w'] || keys['ArrowUp']) ky -= 1;
+            if (keys['s'] || keys['ArrowDown']) ky += 1;
 
             if (kx !== 0 || ky !== 0) {
                 const len = Math.sqrt(kx * kx + ky * ky);
@@ -313,22 +282,6 @@ class Controls {
             } else if (!this.joystickActive) {
                 this.game.input.x = 0;
                 this.game.input.y = 0;
-            }
-
-            // P2: Arrow keys
-            let kx2 = 0, ky2 = 0;
-            if (keys['ArrowLeft']) kx2 -= 1;
-            if (keys['ArrowRight']) kx2 += 1;
-            if (keys['ArrowUp']) ky2 -= 1;
-            if (keys['ArrowDown']) ky2 += 1;
-
-            if (kx2 !== 0 || ky2 !== 0) {
-                const len = Math.sqrt(kx2 * kx2 + ky2 * ky2);
-                this.game.input2.x = kx2 / len;
-                this.game.input2.y = ky2 / len;
-            } else {
-                this.game.input2.x = 0;
-                this.game.input2.y = 0;
             }
 
             this._rafId = requestAnimationFrame(pollKeyboard);

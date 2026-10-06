@@ -2,7 +2,9 @@
 class Renderer {
     constructor(canvas) {
         this.canvas = canvas;
-        this.ctx = canvas.getContext('2d');
+        // Opaque canvas: every frame paints the full background, so the
+        // compositor can skip blending it with the page.
+        this.ctx = canvas.getContext('2d', { alpha: false }) || canvas.getContext('2d');
         this.confetti = [];
         this.goalFlashTimer = 0;
         this.goalFlashTeam = null;
@@ -16,17 +18,19 @@ class Renderer {
         this.comboPopup = null;
         this.suddenDeathFlash = 0;
         this.dashTrails = [];
+        // Set while the online netcode silently re-simulates ticks: effects
+        // for those ticks were already shown once.
+        this.suppressFx = false;
         this.resize();
     }
 
     resize() {
-        // Use the device's real pixel ratio (capped at 3) and add a modest
-        // supersampling factor so thin vector strokes — which end up at
-        // ~0.3-0.7 CSS px after the world→screen downscale — don't turn into
-        // a blurry anti-aliased mush.
-        const rawDpr = Math.min(window.devicePixelRatio || 1, 3);
-        const supersample = 1.5;
-        const dpr = rawDpr * supersample;
+        // Backing-store resolution. Low-DPR screens get a little
+        // supersampling so thin strokes stay crisp, but the total is capped
+        // at 2x: a 3x phone used to render at 4.5x (~20x the CSS pixel
+        // count), which made the GPU the bottleneck and dropped frames.
+        const rawDpr = window.devicePixelRatio || 1;
+        const dpr = Math.min(rawDpr * 1.5, 2);
         // On iOS WKWebView, window dimensions can be 0 during startup or orientation changes.
         // Fall back to document/screen dimensions, with a hard minimum to prevent zero-scale rendering.
         let w = window.innerWidth || document.documentElement.clientWidth || screen.width || 320;
@@ -89,7 +93,26 @@ class Renderer {
     }
 
     triggerShake(intensity) {
+        if (this.suppressFx) return;
         this.screenShake = Math.min(intensity, 1);
+    }
+
+    // Advance all purely visual effects by real elapsed time (ms), once per
+    // rendered frame — keeps them the same speed at 30, 60 or 120 fps.
+    updateEffects(dt) {
+        const k = dt / 16.67;
+        this.updateConfetti(dt);
+        this.updateNetRipple(dt);
+        this.updateHitFlashes(k);
+        for (let i = this.dashTrails.length - 1; i >= 0; i--) {
+            this.dashTrails[i].life -= 0.04 * k;
+            if (this.dashTrails[i].life <= 0) this.dashTrails.splice(i, 1);
+        }
+        if (this.comboPopup) {
+            this.comboPopup.timer += dt;
+            if (this.comboPopup.timer >= this.comboPopup.maxTime) this.comboPopup = null;
+        }
+        if (this.suddenDeathFlash > 0) this.suddenDeathFlash -= dt;
     }
 
     drawField(field) {
@@ -363,6 +386,7 @@ class Renderer {
     }
 
     triggerNetRipple(side, ballY, field) {
+        if (this.suppressFx) return;
         const normY = (ballY - field.goalY) / field.goalHeight;
         if (side === 'left') {
             this.netRipple.left = 1.0;
@@ -381,13 +405,12 @@ class Renderer {
 
     drawBall(ball) {
         const ctx = this.ctx;
-        const isSuper = ball.superKick > 0;
+        const ballSpeed = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
+        // (The simulation clears superKick once the ball slows down; the
+        // renderer must never modify game state.)
+        const isSuper = ball.superKick > 0 && ballSpeed >= 3;
         const isFire = ball.fireLevel > 0;
         const isBlue = ball.fireLevel >= 2;
-        const ballSpeed = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
-
-        // Decay super kick
-        if (isSuper && ballSpeed < 3) ball.superKick = 0;
 
         // Trail (circular buffer based — O(1) per frame)
         const trailPts = ball.getTrailPoints ? ball.getTrailPoints() : [];
@@ -510,7 +533,9 @@ class Renderer {
         ctx.stroke();
     }
 
-    drawPlayer(player, isControlled = false) {
+    // `chargeRatio` (optional) overrides the kick charge shown on the ring —
+    // the local player's ring follows the real button for instant feedback.
+    drawPlayer(player, isControlled = false, chargeRatio) {
         const ctx = this.ctx;
         const baseColor = player.team === 'red' ? '#ff4d6d' : '#4dd4ff';
         const glowRGB = player.team === 'red' ? '255,77,109' : '77,212,255';
@@ -699,14 +724,14 @@ class Renderer {
         }
 
         // Charge ring
-        if (isControlled && player.kickChargeRatio > 0) {
-            this.drawChargeRing(player);
+        const ratio = chargeRatio !== undefined ? chargeRatio : player.kickChargeRatio;
+        if (isControlled && ratio > 0) {
+            this.drawChargeRing(player, ratio);
         }
     }
 
-    drawChargeRing(player) {
+    drawChargeRing(player, ratio) {
         const ctx = this.ctx;
-        const ratio = player.kickChargeRatio;
         const ringRadius = player.radius + 14;
         const lineWidth = 5;
         const startAngle = -Math.PI / 2;
@@ -816,6 +841,7 @@ class Renderer {
     }
 
     spawnDashTrail(fromX, fromY, toX, toY, team) {
+        if (this.suppressFx) return;
         this.dashTrails.push({
             fromX, fromY, toX, toY, team,
             life: 1.0,
@@ -824,10 +850,8 @@ class Renderer {
 
     drawDashTrails() {
         const ctx = this.ctx;
-        for (let i = this.dashTrails.length - 1; i >= 0; i--) {
+        for (let i = 0; i < this.dashTrails.length; i++) {
             const t = this.dashTrails[i];
-            t.life -= 0.04;
-            if (t.life <= 0) { this.dashTrails.splice(i, 1); continue; }
 
             const color = t.team === 'red' ? '255,180,50' : '50,180,255';
             // Streak line
@@ -854,6 +878,7 @@ class Renderer {
     }
 
     spawnHitFlash(x, y, intensity) {
+        if (this.suppressFx) return;
         const count = Math.floor(4 + intensity * 6); // Fewer particles
         for (let i = 0; i < count; i++) {
             const angle = Math.random() * Math.PI * 2;
@@ -870,16 +895,17 @@ class Renderer {
         }
     }
 
-    updateHitFlashes() {
-        // Swap-and-pop removal
+    updateHitFlashes(k = 1) {
+        // Swap-and-pop removal. `k` = elapsed time in 60 fps frames.
+        const drag = Math.pow(0.92, k);
         let i = 0;
         while (i < this.hitFlashes.length) {
             const p = this.hitFlashes[i];
-            p.x += p.vx;
-            p.y += p.vy;
-            p.vx *= 0.92;
-            p.vy *= 0.92;
-            p.life -= p.decay;
+            p.x += p.vx * k;
+            p.y += p.vy * k;
+            p.vx *= drag;
+            p.vy *= drag;
+            p.life -= p.decay * k;
             if (p.life <= 0) {
                 this.hitFlashes[i] = this.hitFlashes[this.hitFlashes.length - 1];
                 this.hitFlashes.pop();
@@ -976,6 +1002,7 @@ class Renderer {
 
     // --- Confetti system ---
     spawnConfetti(team) {
+        if (this.suppressFx) return;
         const colors = team === 'red'
             ? ['#e94560', '#ff6b81', '#ff4757', '#ffa502', '#fff200', '#ffffff']
             : ['#53d8fb', '#70a1ff', '#1e90ff', '#ffa502', '#fff200', '#ffffff'];
@@ -1007,15 +1034,17 @@ class Renderer {
         }
 
         // Swap-and-pop removal
+        const k = dt / 16.67;
+        const drag = Math.pow(0.99, k);
         let i = 0;
         while (i < this.confetti.length) {
             const c = this.confetti[i];
-            c.vy += c.gravity;
-            c.vx *= 0.99;
-            c.x += c.vx;
-            c.y += c.vy;
-            c.rotation += c.rotationSpeed;
-            c.life -= c.decay;
+            c.vy += c.gravity * k;
+            c.vx *= drag;
+            c.x += c.vx * k;
+            c.y += c.vy * k;
+            c.rotation += c.rotationSpeed * k;
+            c.life -= c.decay * k;
 
             if (c.life <= 0 || c.y > this.h + 20) {
                 this.confetti[i] = this.confetti[this.confetti.length - 1];
@@ -1030,23 +1059,30 @@ class Renderer {
         const ctx = this.ctx;
         // Goal flash is drawn in screen space by game.render() instead
 
-        // setTransform instead of save/restore per particle
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        if (this.confetti.length === 0) return;
+        // setTransform instead of save/restore per particle, composed with
+        // the current (screen-space + shake) transform
+        const m = ctx.getTransform();
         for (let i = 0; i < this.confetti.length; i++) {
             const c = this.confetti[i];
             ctx.globalAlpha = c.life;
             ctx.fillStyle = c.color;
             const cos = Math.cos(c.rotation);
             const sin = Math.sin(c.rotation);
-            ctx.setTransform(cos * dpr, sin * dpr, -sin * dpr, cos * dpr, c.x * dpr, c.y * dpr);
+            ctx.setTransform(
+                m.a * cos + m.c * sin, m.b * cos + m.d * sin,
+                m.c * cos - m.a * sin, m.d * cos - m.b * sin,
+                m.a * c.x + m.c * c.y + m.e, m.b * c.x + m.d * c.y + m.f
+            );
             ctx.fillRect(-c.width / 2, -c.height / 2, c.width, c.height);
         }
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.setTransform(m);
         ctx.globalAlpha = 1;
     }
 
     // --- Combo popup system ---
     showComboPopup(text, team) {
+        if (this.suppressFx) return;
         this.comboPopup = {
             text,
             team,
@@ -1059,10 +1095,7 @@ class Renderer {
         if (!this.comboPopup) return;
         const ctx = this.ctx;
         const p = this.comboPopup;
-        p.timer += 16.67; // Approximate frame time
-
-        const progress = p.timer / p.maxTime;
-        if (progress >= 1) { this.comboPopup = null; return; }
+        const progress = Math.min(p.timer / p.maxTime, 1);
 
         // Scale: elastic pop-in then settle
         let scale;
@@ -1114,6 +1147,7 @@ class Renderer {
 
     // --- Fire impact effect ---
     spawnFireImpact(x, y, level) {
+        if (this.suppressFx) return;
         const color = level >= 2 ? '#88ccff' : '#ffaa33';
         const count = 8;
         for (let i = 0; i < count; i++) {
@@ -1133,6 +1167,7 @@ class Renderer {
 
     // --- Sudden Death overlay ---
     showSuddenDeath() {
+        if (this.suppressFx) return;
         this.suddenDeathFlash = 2000;
     }
 
@@ -1171,7 +1206,6 @@ class Renderer {
     drawSuddenDeathHUD() {
         const ctx = this.ctx;
         if (this.suddenDeathFlash > 0) {
-            this.suddenDeathFlash -= 16.67;
             const progress = this.suddenDeathFlash / 2000;
 
             // Flash overlay

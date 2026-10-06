@@ -134,6 +134,24 @@ class RLOrchestrator {
         this._runGenerationLoop();
     }
 
+
+    // Soft pause while a match is being played: no new generations are
+    // dispatched and a finished batch waits, but the auto-resume flag is kept.
+    pause() {
+        this._paused = true;
+    }
+
+    resume() {
+        if (!this._paused) return;
+        this._paused = false;
+        if (this._deferredUpdate) {
+            this._deferredUpdate = false;
+            this._consolidateAndUpdate();
+        } else if (this.isTraining && !this._gen_inFlight) {
+            this._runGenerationLoop();
+        }
+    }
+
     stop() {
         this.isTraining = false;
         // Persist a final checkpoint and clear the auto-resume flag
@@ -222,7 +240,7 @@ class RLOrchestrator {
     }
 
     _runGenerationLoop() {
-        if (!this.isTraining) return;
+        if (!this.isTraining || this._paused) return;
         if (this._gen_inFlight) return;
         this._gen_inFlight = true;
 
@@ -252,7 +270,8 @@ class RLOrchestrator {
             this._workerBusy[idx] = false;
             this._pendingResults.push(data);
             if (this._pendingResults.length === this.workers.length) {
-                this._consolidateAndUpdate();
+                if (this._paused) this._deferredUpdate = true;
+                else this._consolidateAndUpdate();
             }
         } else if (data.type === 'evaluationResult') {
             this._evalTask = null;

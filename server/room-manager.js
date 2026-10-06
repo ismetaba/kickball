@@ -164,6 +164,13 @@ class RoomManager {
     _leaveRoom(playerId) {
         const roomCode = this.playerRooms.get(playerId);
         if (!roomCode) return;
+        // P2P rooms live in their own map; without this a guest or host who
+        // pressed "leave" was dropped from playerRooms silently, so the other
+        // side was never told and the room kept a ghost player.
+        if (roomCode.startsWith('p2p:')) {
+            this._leaveP2PRoom(playerId);
+            return;
+        }
 
         const room = this.rooms.get(roomCode);
         if (room) {
@@ -308,6 +315,13 @@ class RoomManager {
 
     cleanupStaleRooms() {
         const now = Date.now();
+        // P2P rooms whose host socket is gone
+        for (const [code, room] of this.p2pRooms) {
+            if (!room.hostWs || room.hostWs.readyState !== 1) {
+                this._leaveP2PRoom(room.hostId);
+                this.p2pRooms.delete(code);
+            }
+        }
         for (const [code, room] of this.rooms) {
             // Remove rooms that have been waiting too long or are finished
             if (room.state === ROOM_STATE.FINISHED ||
@@ -404,6 +418,17 @@ class RoomManager {
             this._sendTo(ws, MSG.ERROR, { message: 'Room not found' });
             return;
         }
+        if (room.hostId === playerId) return;
+        if (room.peers.has(playerId)) {
+            // Duplicate join (e.g. double tap) — just resend the room state
+            this._sendTo(ws, MSG.ROOM_JOINED, {
+                roomCode: code, playerId, slots: this._getP2PSlots(room),
+                settings: room.settings, isHost: false, isP2P: true,
+            });
+            return;
+        }
+        // Leave whatever room this player was in before
+        this._leaveRoom(playerId);
 
         // Pick balanced team
         let red = 1, blue = 0; // host is red
