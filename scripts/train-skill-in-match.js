@@ -11,6 +11,10 @@
 // drill's own success test. Drill episodes stay in the mix (--drill-frac) so
 // it keeps its technique.
 //
+// --use limits the hand-over to some coach situations (js/rl/skills.js
+// SITUATIONS), and --hold sets the coach's minimum hold, as in the shipped
+// hybrid (bundle-models.js --expert hybrid).
+//
 // Every --eval-every generations the hybrid (base + this skill) plays the
 // base alone and the rule AI; the skill is saved to --out whenever the
 // hybrid's result against the base model improves.
@@ -22,7 +26,7 @@ const { PPOTrainer } = require('../js/rl/trainer');
 const { HeadlessEnv1v1 } = require('../js/rl/env');
 const AIController = require('../shared/ai');
 const D = require('../js/rl/drills');
-const { SkillAgent, SkillCoach, MatchAgent, SKILLS } = require('../js/rl/skills');
+const { SkillAgent, SkillCoach, MatchAgent, SKILLS, SITUATIONS } = require('../js/rl/skills');
 const { MATCH_ENV: GAME_RULES, act, playMatches, fmtResult } = require('./lib/match');
 
 const args = parseArgs(process.argv.slice(2), {
@@ -37,6 +41,8 @@ const args = parseArgs(process.argv.slice(2), {
     ent: 0.005,
     evalEvery: 5,
     evalMatches: 40,
+    use: null,           // comma-separated situations where the skill may take over
+    hold: 0,             // coach's minimum hold in ms (0: default)
     out: null,
 });
 if (!SKILLS.includes(args.skill) || !args.base || !args.init) {
@@ -44,6 +50,9 @@ if (!SKILLS.includes(args.skill) || !args.base || !args.init) {
     process.exit(1);
 }
 const outFile = path.resolve(args.out || `models/skills/${args.skill}-match.json`);
+const situations = args.use ? args.use.split(',') : Object.keys(SITUATIONS).filter(k => SITUATIONS[k] === args.skill);
+if (situations.some(k => SITUATIONS[k] !== args.skill)) throw new Error('--use: situations must belong to ' + args.skill);
+const holdMs = args.hold || undefined;
 
 const readJSON = (f) => JSON.parse(fs.readFileSync(path.resolve(f), 'utf8'));
 const baseSer = readJSON(args.base).policy;
@@ -75,7 +84,7 @@ function startEpisode() {
     match.env.reset();
     match.side = Math.random() < 0.5 ? 'red' : 'blue';
     match.oppRule = Math.random() < 0.4 ? new AIController('normal') : null;
-    match.coach = new SkillCoach();
+    match.coach = new SkillCoach(holdMs);
 }
 
 function collectMatchSegments(T) {
@@ -96,7 +105,8 @@ function collectMatchSegments(T) {
         const isRed = match.side === 'red';
         const self = isRed ? env.red : env.blue, opp = isRed ? env.blue : env.red;
         const obs = isRed ? env.stackRed.get() : env.stackBlue.get();
-        const want = match.coach.choose(self, env.ball, opp, env.field, 33.34);
+        const pick = match.coach.choose(self, env.ball, opp, env.field, 33.34);
+        const want = pick === args.skill && situations.includes(match.coach.spellSituation) ? pick : null;
         const vBase = base.forward(obs).value;
         if (inSkill && want !== args.skill) {
             b.segEnd[last] = 1;
@@ -158,7 +168,7 @@ const drillEnv = new D.DrillEnv(args.skill);
 const drillLevel = () => 1 + Math.floor(Math.random() * 3);
 
 function evaluate() {
-    const hybrid = () => new SkillAgent({ [args.skill]: skillPolicy }, { base });
+    const hybrid = () => new SkillAgent({ [args.skill]: skillPolicy }, { base, situations, holdMs });
     const opts = { matches: args.evalMatches, seconds: 120 };
     const vsBase = playMatches(hybrid, () => new MatchAgent(base), opts);
     const vsRule = playMatches(hybrid, () => new AIController('normal'), { matches: 10, seconds: 120 });
@@ -215,7 +225,7 @@ async function main() {
                     levels: { 1: e.drills[0], 2: e.drills[1], 3: e.drills[2] },
                     generation: (initModel.generation || 0) + g,
                     totalSteps: initModel.totalSteps,
-                    matchTuned: { base: args.base, generations: g, vsBase: e.vsBase, vsRule: e.vsRule },
+                    matchTuned: { base: args.base, situations, holdMs, generations: g, vsBase: e.vsBase, vsRule: e.vsRule },
                     savedAt: new Date().toISOString(),
                     policy: skillPolicy.serialize(),
                 }));
