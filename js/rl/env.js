@@ -227,8 +227,11 @@ class HeadlessEnv1v1 {
         return stunCount;
     }
 
-    // Run one physics step (32ms = 30Hz, matching 2x sim speed used during training)
-    step(actionRed, actionBlue) {
+    // Advance the simulation one 33ms step: actions, kicks, entity updates,
+    // pull, collisions, super-kick homing and power-ups. Shared by the match
+    // env and the skill drills (drills.js), which score the step differently.
+    // A goal is detected but not acted on: no score change, no position reset.
+    _simulate(actionRed, actionBlue) {
         const dt = 33.34;
         Physics.dtRatio = (dt / 16.67) * Physics.GAME_SPEED;
 
@@ -291,8 +294,8 @@ class HeadlessEnv1v1 {
         }
 
         // Collisions
-        Physics.resolveCircleCollision(this.red, this.ball, Physics.PLAYER_BOUNCE, Physics.BALL_BOUNCE);
-        Physics.resolveCircleCollision(this.blue, this.ball, Physics.PLAYER_BOUNCE, Physics.BALL_BOUNCE);
+        const redBumped = Physics.resolveCircleCollision(this.red, this.ball, Physics.PLAYER_BOUNCE, Physics.BALL_BOUNCE);
+        const blueBumped = Physics.resolveCircleCollision(this.blue, this.ball, Physics.PLAYER_BOUNCE, Physics.BALL_BOUNCE);
         Physics.resolveCircleCollision(this.red, this.blue, Physics.PLAYER_BOUNCE, Physics.PLAYER_BOUNCE);
 
         for (const p of this.players) Physics.constrainToField(p, this.field, true);
@@ -318,6 +321,26 @@ class HeadlessEnv1v1 {
 
         // Power-ups
         if (this.powerUpMgr) this.powerUpMgr.update(dt, this.players, false);
+
+        return {
+            dt,
+            preBVx,
+            preBVy,
+            redKickConnected,
+            blueKickConnected,
+            redStuns,
+            blueStuns,
+            // A kick or a body collision with the ball this step
+            redTouched: redKickConnected || redBumped,
+            blueTouched: blueKickConnected || blueBumped,
+            scorer: Physics.checkGoal(this.ball, this.field),
+        };
+    }
+
+    // Run one physics step (32ms = 30Hz, matching 2x sim speed used during training)
+    step(actionRed, actionBlue) {
+        const sim = this._simulate(actionRed, actionBlue);
+        const { dt, preBVx, redKickConnected, blueKickConnected, redStuns, blueStuns } = sim;
 
         // ---- Reward shaping ----
         let rRed = 0, rBlue = 0;
@@ -410,7 +433,7 @@ class HeadlessEnv1v1 {
 
         // Goals
         let goal = null;
-        const scorer = Physics.checkGoal(this.ball, this.field);
+        const scorer = sim.scorer;
         if (scorer === 'red') {
             this.scoreRed++;
             rRed += 1.0;
@@ -447,12 +470,17 @@ class HeadlessEnv1v1 {
         };
     }
 
-    _observe(pushToStack = true) {
-        const gs = {
+    // Match clock/score features the encoder sees (from red's perspective)
+    _gameState() {
+        return {
             timeLeft: Math.max(0, (this.maxSteps - this.steps) * 33.34),
             scoreDiff: this.scoreRed - this.scoreBlue,
             kickoffActive: this.kickoffActive,
         };
+    }
+
+    _observe(pushToStack = true) {
+        const gs = this._gameState();
         const pus = this.powerUpMgr ? this.powerUpMgr.powerUps : null;
         RLEncoder.encode(this.red, this.blue, this.ball, this.field, gs, pus, this.obsRed, false);
         const gsBlue = { ...gs, scoreDiff: -gs.scoreDiff };

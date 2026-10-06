@@ -5,6 +5,7 @@
   "main": "sw.js",
   "scripts": {
     "test": "node --test test/*.test.js",
+    "train:skill": "node scripts/train-skill.js",
     "stage:web": "rm -rf www/css www/js www/shared www/models www/icons && cp -R css js shared models icons www/ && cp index.html sw.js manifest.json www/",
     "sync:ios": "npm run stage:web && npx cap sync ios",
     "open:ios": "npm run sync:ios && open ios/App/App.xcodeproj"

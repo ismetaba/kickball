@@ -29,3 +29,13 @@ Open `index.html` in a browser. No build step required.
 Pure HTML5 Canvas + vanilla JavaScript. No frameworks.
 
 Online play (`js/netplay.js`, `js/p2p.js`): every phone runs the same deterministic 60 Hz simulation and only inputs are exchanged over a WebRTC data channel (the server in `server/` handles room codes, signaling and a relay fallback). Inputs are scheduled a few ticks ahead based on measured ping, every packet repeats unacknowledged inputs so packet loss doesn't stall the game, clocks are kept in step, and a periodic state hash triggers an automatic resync if two devices ever disagree. Both devices must run the same app version.
+
+## Training the AI
+
+Besides full-match training in the in-game AI Lab, each skill can be trained on its own drill (`js/rl/drills.js`): **dribble**, **defend**, **shoot** and **pull**. A drill is a few-second scenario with its own start, end and reward, and three levels (no opponent, slow opponent, full-speed opponent). Train one from the terminal:
+
+```
+npm run train:skill -- --skill shoot
+```
+
+It prints the success rate as it learns, moves up a level at 80% success, and saves the best policy to `models/skills/<skill>.json`. Add `--bc 40000` to start from a copy of the scripted reference player instead of from scratch.
