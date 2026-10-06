@@ -15,9 +15,9 @@
 //   model:<file>  a single full-match PPO policy (e.g. models/kickzone-rl-gen1325.json),
 //                 kick/pull drawn from their probabilities as in training
 //   model-det:<file>  the same, but kick/pull only above p = 0.5
-//   hybrid:<file>:<skills>  that model plays, except in the situations the coach
-//                 gives to the listed skills (comma-separated), e.g.
-//                 hybrid:models/kickzone-rl-gen1325.json:shoot,defend
+//   hybrid:<file>:<list>  that model plays, except where the list lets a skill
+//                 take over: skill names and/or coach situations, comma-separated,
+//                 e.g. hybrid:models/kickzone-rl-gen1325.json:defend,attackWithBall
 const fs = require('fs');
 const path = require('path');
 
@@ -38,6 +38,7 @@ const args = parseArgs(process.argv.slice(2), {
     skillSuffix: '',
     bundle: 'models/skills.json',
     expert: 'models/expert.json',
+    json: false,        // print the result as one JSON line
 });
 
 // Everything random (env resets, the AIs' kick/pull draws) uses Math.random
@@ -65,7 +66,7 @@ function factoryFor(kind) {
         if (e.type === 'skills') f = SkillAgent.factory(loadSkillBundle());
         else if (e.type === 'hybrid') f = SkillAgent.factory(loadSkillBundle(), { base: e, only: e.skills });
         else f = MatchAgent.factory(e);
-    } else if ((m = /^hybrid:(.+):([a-z,]+)$/.exec(kind))) {
+    } else if ((m = /^hybrid:(.+):([A-Za-z,]+)$/.exec(kind))) {
         f = SkillAgent.factory(loadSkillBundle(), { base: readJSON(m[1]), only: m[2].split(',') });
     } else if ((m = /^model(-det)?:(.+)$/.exec(kind))) {
         f = MatchAgent.factory({ policy: readJSON(m[2]).policy, threshold: !!m[1] });
@@ -81,6 +82,10 @@ const r = playMatches(factoryFor(args.a), factoryFor(args.b), {
     matches: args.matches, seconds: args.seconds, teamSize: args.teamSize, powerups: args.powerups,
 });
 const n = args.matches;
+if (args.json) {
+    console.log(JSON.stringify(r));
+    process.exit(0);
+}
 console.log(`${args.a} vs ${args.b}: ${n} ${args.teamSize}v${args.teamSize} matches of ${args.seconds}s`
     + `${args.powerups ? ' with power-ups' : ''} (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
 console.log(`  won-drew-lost ${fmtResult(r)}  | ${(r.gf / n).toFixed(2)} - ${(r.ga / n).toFixed(2)} goals per match`

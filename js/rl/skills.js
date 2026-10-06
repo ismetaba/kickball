@@ -61,25 +61,42 @@ function readSituation(player, ball, opp, field) {
     return { progress, mine, theirs, shotIncoming, closer: myDist < oppDist };
 }
 
+// The situations the coach tells apart, and the skill each one goes to
+const SITUATIONS = {
+    shot: 'defend',               // the ball is heading into our goal
+    carriedAtUs: 'defend',        // the opponent has it in our half
+    carriedAway: 'pull',          // the opponent has it in their half
+    attackWithBall: 'shoot',      // we have it in the attacking zone
+    carryWithBall: 'dribble',     // we have it anywhere else
+    looseNearGoal: 'shoot',       // loose in the attacking zone, we're closer
+    looseTheyLead: 'defend',      // loose in our half, they're closer
+    loose: 'pull',                // any other loose ball
+};
+
+function classify(s) {
+    if (s.shotIncoming && !s.mine) return 'shot';
+    if (s.theirs) return s.progress < 0.5 ? 'carriedAtUs' : 'carriedAway';
+    if (s.mine) return s.progress >= SHOOT_FROM ? 'attackWithBall' : 'carryWithBall';
+    if (s.progress >= SHOOT_FROM && s.closer) return 'looseNearGoal';
+    if (!s.closer && s.progress < 0.4) return 'looseTheyLead';
+    return 'loose';
+}
+
 function pickSkill(s) {
-    if (s.shotIncoming && !s.mine) return 'defend';
-    if (s.theirs) return s.progress < 0.5 ? 'defend' : 'pull';
-    if (s.mine) return s.progress >= SHOOT_FROM ? 'shoot' : 'dribble';
-    // Loose ball
-    if (s.progress >= SHOOT_FROM && s.closer) return 'shoot';
-    if (!s.closer && s.progress < 0.4) return 'defend';
-    return 'pull';
+    return SITUATIONS[classify(s)];
 }
 
 class SkillCoach {
     constructor() {
         this.skill = null;
+        this.situation = null;     // situation at the latest decision
         this.heldMs = 0;
     }
 
     choose(player, ball, opp, field, dt) {
         const s = readSituation(player, ball, opp, field);
-        const want = pickSkill(s);
+        this.situation = classify(s);
+        const want = SITUATIONS[this.situation];
         this.heldMs += dt;
         const urgent = want === 'defend' && s.shotIncoming;
         if (want !== this.skill && (this.skill === null || this.heldMs >= MIN_HOLD_MS || urgent)) {
@@ -208,9 +225,12 @@ class SkillAgent extends LearnedAgent {
     // opts.base: a full-match Policy that plays whenever the coach picks a
     //            skill that isn't in `policies` (so skills can be added to a
     //            match model one at a time)
+    // opts.situations: with a base, the situations (SITUATIONS keys) where the
+    //            skills may play at all; the base plays everywhere else
     constructor(policies, opts = {}) {
         super(opts.random);
         this.base = opts.base || null;
+        this.situations = opts.situations ? new Set(opts.situations) : null;
         for (const name of SKILLS) {
             if (!policies[name] && !this.base) throw new Error('missing skill policy: ' + name);
         }
@@ -222,16 +242,22 @@ class SkillAgent extends LearnedAgent {
     // Build agents that share one set of decoded policies:
     //   const make = SkillAgent.factory(bundle); const ai = make();
     // bundle.skills[name] is a model file ({ policy, ... }) or a decoded Policy;
-    // opts.base likewise (a full-match model), opts.only limits which skills play.
+    // opts.base likewise (a full-match model). opts.only limits where skills
+    // play: skill names (all of that skill's situations) and/or SITUATIONS keys.
     static factory(bundle, opts = {}) {
         const load = (m) => (m instanceof RLPolicy.Policy ? m : decodePolicy(m.policy));
+        let situations = null;
+        if (opts.only) {
+            situations = Object.keys(SITUATIONS).filter(k =>
+                opts.only.includes(k) || opts.only.includes(SITUATIONS[k]));
+        }
         const policies = {};
         for (const name of SKILLS) {
-            if (opts.only && !opts.only.includes(name)) continue;
+            if (situations && !situations.some(k => SITUATIONS[k] === name)) continue;
             if (bundle.skills[name]) policies[name] = load(bundle.skills[name]);
         }
         const base = opts.base ? load(opts.base) : null;
-        return () => new SkillAgent(policies, { base });
+        return () => new SkillAgent(policies, { base, situations });
     }
 
     // A fixed clock and score: the skills were trained with these randomized
@@ -242,7 +268,8 @@ class SkillAgent extends LearnedAgent {
 
     _choosePolicy(player, ball, field, opp) {
         this.skill = this.coach.choose(player, ball, opp, field, STEP_MS);
-        return this.policies[this.skill] || this.base;
+        const allowed = !this.situations || this.situations.has(this.coach.situation);
+        return (allowed && this.policies[this.skill]) || this.base;
     }
 
     _onBench() {
@@ -365,7 +392,9 @@ return {
     SkillAgent,
     MatchAgent,
     SkillCoach,
+    SITUATIONS,
     readSituation,
+    classify,
     pickSkill,
     packPolicy,
     decodePolicy,

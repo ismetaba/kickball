@@ -13,11 +13,12 @@
 // --expert match   Expert plays the full-match policy given by --match
 //                  (--threshold: kick/pull only when p > 0.5 instead of sampled)
 // --expert skills  Expert is the coach driving the four skills
-// --expert hybrid  the --match policy plays, except in the situations the
-//                  coach gives to the skills listed in --use (e.g. defend,shoot)
+// --expert hybrid  the --match policy plays, except where --use lets a skill
+//                  take over: skill names (all their situations) and/or coach
+//                  situations (js/rl/skills.js SITUATIONS), e.g. --use shot,carriedAtUs
 const fs = require('fs');
 const path = require('path');
-const { SKILLS, packPolicy } = require('../js/rl/skills');
+const { SKILLS, SITUATIONS, packPolicy } = require('../js/rl/skills');
 
 const args = parseArgs(process.argv.slice(2));
 const outDir = path.resolve(args.out || 'models');
@@ -44,7 +45,8 @@ if (expertKind === 'match' || expertKind === 'hybrid') {
     if (!args.match) throw new Error(`--expert ${expertKind} needs --match <checkpoint>`);
     const m = JSON.parse(fs.readFileSync(args.match, 'utf8'));
     const use = expertKind === 'hybrid' ? (args.use || '').split(',').filter(Boolean) : undefined;
-    if (use && (!use.length || use.some(s => !SKILLS.includes(s)))) throw new Error('--use needs skills from ' + SKILLS.join(','));
+    const known = [...SKILLS, ...Object.keys(SITUATIONS)];
+    if (use && (!use.length || use.some(s => !known.includes(s)))) throw new Error('--use takes skills or situations: ' + known.join(','));
     expert = {
         kind: 'kickzone-expert', version: 1, type: expertKind,
         skills: use,
