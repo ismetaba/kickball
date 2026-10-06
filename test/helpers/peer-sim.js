@@ -78,8 +78,13 @@ class World {
         const world = this;
         const els = new Map();
         const raf = [];
+        // opts.perturbPow: this "device" rounds Math.pow differently in the
+        // last bit, like two different JS engines can.
+        const math = opts.perturbPow
+            ? Object.assign(Object.create(Math), { pow: (a, b) => Math.pow(a, b) * (1 + Number.EPSILON) })
+            : Math;
         const ctx = {
-            console, Math, JSON, Date, Map, Set, Array, Object, Number, String, Boolean, Error, Proxy,
+            console, Math: math, JSON, Date, Map, Set, Array, Object, Number, String, Boolean, Error, Proxy,
             Float64Array, Float32Array, Uint32Array, Int32Array, Uint8Array, Int16Array, ArrayBuffer, DataView,
             setTimeout: (fn, ms) => { world.timers.push({ at: world.now + (ms || 0), fn }); return 0; },
             clearTimeout() {}, setInterval: () => 0, clearInterval() {},
@@ -164,17 +169,20 @@ class World {
     }
 
     // Start every peer's session with identical match parameters
-    setupMatch({ settings, seed = 4242, inputDelay = 3 }) {
+    // sharePowTable=false skips the host's pow table (to show why it exists)
+    setupMatch({ settings, seed = 4242, inputDelay = 3, sharePowTable = true }) {
         const peers = [...this.peers.values()];
         const humanSlots = peers.map(p => p.opts.slot);
+        const host = peers[0];
+        const powTable = sharePowTable ? JSON.parse(JSON.stringify(host.game.buildPowTable(settings))) : undefined;
         for (const p of peers) {
             const peerSlots = new Map();
             if (p.isHost) for (const q of peers) if (q !== p) peerSlots.set(q.name, q.opts.slot);
             p.session = new p.LockstepSession({
                 game: p.game, net: p.net, isHost: p.isHost, mySlot: p.opts.slot,
-                humanSlots, peerSlots, inputDelay,
+                humanSlots, peerSlots, inputDelay, matchId: seed,
             });
-            p.matchCfg = { settings, seed, humanSlots, mySlot: p.opts.slot };
+            p.matchCfg = { settings, seed, humanSlots, mySlot: p.opts.slot, powTable };
             p.bot = botInput(p, this, 1000 + p.opts.slot);
         }
     }
@@ -202,7 +210,7 @@ class World {
         if (!p.started) {
             p.game.netplay = p.session;
             p.game.startLockstepMatch(p.matchCfg);
-            p.game.onMatchEnd = () => p.session.linger();
+            p.game.onMatchEnd = () => { p.session.linger(); p.session.sendFinal(); };
             p.session.start();
             p.started = true;
             p.startedAt = this.now;

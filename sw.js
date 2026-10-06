@@ -13,8 +13,8 @@ const ASSETS = [
   '/css/style.css?v=25',
   // Shared simulation core
   '/shared/constants.js?v=1',
-  '/shared/physics.js?v=1',
-  '/shared/entities.js?v=2',
+  '/shared/physics.js?v=2',
+  '/shared/entities.js?v=3',
   '/shared/ai.js?v=3',
   '/shared/powerups.js?v=2',
   // RL subsystem
@@ -31,8 +31,8 @@ const ASSETS = [
   // Client app
   '/js/audio.js?v=5',
   '/js/renderer.js?v=23',
-  '/js/game.js?v=35',
-  '/js/netplay.js?v=1',
+  '/js/game.js?v=36',
+  '/js/netplay.js?v=2',
   '/js/p2p.js?v=4',
   '/js/controls.js?v=25',
   '/js/ui.js?v=28',

@@ -12,9 +12,13 @@ const SETTINGS = { teamSize: 1, duration: 120, goalLimit: 0, powerups: true, map
 function oneVsOne(link, opts = {}) {
     const w = new World(opts.netSeed || 11);
     const host = w.addPeer('host', { slot: 0, frameMs: opts.hostFrameMs });
-    const guest = w.addPeer('guest', { slot: 1, startAt: link.latency, frameMs: opts.guestFrameMs });
+    const guest = w.addPeer('guest', { slot: 1, startAt: link.latency, frameMs: opts.guestFrameMs, perturbPow: opts.guestPerturbPow });
     w.link('host', 'guest', link);
-    w.setupMatch({ settings: { ...SETTINGS, ...(opts.settings || {}) }, inputDelay: opts.inputDelay || 3 });
+    w.setupMatch({
+        settings: { ...SETTINGS, ...(opts.settings || {}) },
+        inputDelay: opts.inputDelay || 3,
+        sharePowTable: opts.sharePowTable !== false,
+    });
     return { w, host, guest };
 }
 
@@ -115,4 +119,63 @@ test('a full match ends on the same tick with the same score for both players', 
     if (host.game.redScore !== host.game.blueScore) {
         assert.notEqual(hostTitle, guestTitle, 'each side sees the result from its own team');
     }
+});
+
+test('different Math.pow rounding (iOS vs Android engines) cannot desync a match', () => {
+    // Without the host's pow table the 1-ulp difference grows into a desync…
+    const bad = oneVsOne({ latency: 12, jitter: 3, loss: 0 }, { guestPerturbPow: true, sharePowTable: false });
+    bad.w.run(8000);
+    const without = compareHashes(bad.host, bad.guest).mismatched + bad.guest.session.resyncCount;
+    assert.ok(without > 0, 'the perturbation must matter, or this test proves nothing');
+
+    // …with it, every peer multiplies by the host's exact values.
+    const good = oneVsOne({ latency: 12, jitter: 3, loss: 0 }, { guestPerturbPow: true });
+    good.w.run(8000);
+    assert.equal(compareHashes(good.host, good.guest).mismatched, 0);
+    assert.equal(good.guest.session.resyncCount, 0);
+});
+
+test('packets left over from a previous match are ignored', () => {
+    const { w, host, guest } = oneVsOne({ latency: 15, jitter: 3, loss: 0 });
+    w.run(2000);
+    // A lingering session from the last match (different match id) whose
+    // acks are far ahead of this match
+    const stale = new host.LockstepSession({
+        game: host.game, net: host.net, isHost: true, mySlot: 0,
+        humanSlots: [0, 1], peerSlots: new Map([['guest', 1]]), inputDelay: 3, matchId: 99,
+    });
+    host.game.tickCount += 5000;
+    stale.buf.get(1).contig = host.game.tickCount;
+    const bytes = stale._pktBytes.slice(0, stale._buildPacket(stale.links.get('guest')));
+    host.game.tickCount -= 5000;
+    const ackBefore = guest.session.links.get('host').ack.get(0);
+    guest.session.handleFast('host', new DataView(bytes.buffer), 0);
+    assert.equal(guest.session.links.get('host').ack.get(0), ackBefore, 'stale acks must not apply');
+
+    const t0 = guest.game.tickCount;
+    w.run(5000);
+    assert.ok(guest.game.tickCount - t0 > 170, 'match keeps running');
+    assert.equal(compareHashes(host, guest).mismatched, 0);
+});
+
+test("the host's final score wins if a guest finished differently", () => {
+    const { w, host, guest } = oneVsOne({ latency: 15, jitter: 3, loss: 0 }, { settings: { duration: 10 } });
+    w.run(80000);
+    assert.ok(host.game.matchOver && guest.game.matchOver);
+    // Pretend the guest's last seconds diverged and it shows another score
+    guest.game.blueScore += 3;
+    guest.game.showResult();
+    guest.session._finalTimer = null;
+    guest.session.handleReliable('host', { k: 'end', m: guest.session.matchId, s: host.game.serializeSim() });
+    w.run(w.now + 1500);
+    assert.deepEqual([guest.game.redScore, guest.game.blueScore], [host.game.redScore, host.game.blueScore]);
+});
+
+test('a guest the host gives up on is told so and leaves', () => {
+    const { w, host, guest } = oneVsOne({ latency: 15, jitter: 3, loss: 0 });
+    let lost = false;
+    guest.session.onConnectionLost = () => { lost = true; };
+    w.run(2000, [{ at: 1000, fn: () => host.session.peerGone('guest') }]);
+    assert.equal(lost, true);
+    assert.ok(host.session.dropAt.has(1), 'host hands the slot to the AI');
 });
